@@ -1346,11 +1346,7 @@ class HVO_Sequence(object):
         notes = self.get_notes(return_tuples=False)
         colors = viridis(15)
 
-        try:
-            _html_fig = figure(plot_width=width, plot_height=height, y_range=(-0.5, len(self.drum_mapping)+1.75))
-        except:
-            _html_fig = figure(width=width, height=height, y_range=(-0.5, len(self.drum_mapping)+1.75))
-
+        _html_fig = figure(plot_width=width, plot_height=height, y_range=(-0.5, len(self.drum_mapping)+1.75))
         _html_fig.xaxis.axis_label = 'Time (sec)'
         _html_fig.yaxis.axis_label = 'Instrument'
 

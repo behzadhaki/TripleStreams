@@ -48,7 +48,7 @@ Losses source code available [here](../../../helpers/VAE/train_utils.py)
 
 The model was trained using [Weiths and Biases](https://wandb.ai/), and the following hyperparameters were used in the training process:
 
-The training code is available [here](../../../train.py)
+The training code is available [here](../../../train_MuteVAE.py)
    
 ```yaml
 method: random
@@ -177,13 +177,13 @@ parameters:
     distribution: categorical
     values:
       - SmallSweeps_MGT_VAE
-program: train.py
+program: train_MuteVAE.py
 
 
 
 ```
 
-The training code is available [here](../../../train.py), the better models where selected 
+The training code is available [here](../../../train_MuteVAE.py), the better models where selected 
 bassed on these [evaluetors](../../chapter3_Evaluator/README.md) and saved (look in the [pretrained models](#3_iv) section).
 
 ```python

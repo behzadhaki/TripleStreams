@@ -54,7 +54,7 @@ if __name__ == "__main__":
         project=hparams["wandb_project"],          # name of the project
         anonymous="allow",
         entity="mmil_vae_g2d",                          # 
-        settings=wandb.Settings(code_dir="train.py")    # for code saving
+        settings=wandb.Settings(code_dir="train_MuteVAE.py")    # for code saving
     )
     
     config = wandb.config           # VERY IMPORTANT: from now on, use config instead of hparams.

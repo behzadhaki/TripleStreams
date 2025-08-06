@@ -11,6 +11,8 @@ import pickle
 import bz2
 import logging
 import random
+from data import *
+
 logging.basicConfig(level=logging.DEBUG)
 dataLoaderLogger = logging.getLogger("data.Base.dataLoaders")
 
@@ -560,7 +562,6 @@ def load_downsampled_mega_set_hvo_sequences(
     dir__ = get_data_directory_using_filters(dataset_tag,
                                              dataset_setting_json_path,
                                              down_sampled_ratio=down_sampled_ratio)
-
     if (not os.path.exists(dir__)) or force_regenerate is True or cache_down_sampled_set is False:
         dataLoaderLogger.info(f"No Cached Version Available Here: {dir__}. ")
         dataLoaderLogger.info(f"Downsampling the dataset to {down_sampled_ratio} and saving to {dir__}.")
@@ -792,10 +793,9 @@ class Groove2Drum2BarDataset(Dataset):
             self.min_complexity, self.max_complexity = train_set_info[6]
             self.genre_tags = train_set_info[7]
 
-            self.num_genres = len(self.genre_tags) + 1  # +1 for unknown genre
+            self.num_genres = len(self.genre_tags)
             # create a one-hot encoding for each genre
             self.genre_mapping = {genre: np.eye(self.num_genres)[idx].tolist() for idx, genre in enumerate(self.genre_tags)}
-            self.genre_mapping["unknown"] = np.eye(self.num_genres)[-1].tolist()
 
             # collect input tensors, output tensors, and hvo_sequences
             # ------------------------------------------------------------------------------------------
@@ -991,16 +991,11 @@ class Groove2Drum2BarDataset(Dataset):
                 self.output_grooves[idx],   # 5: output_groove (drum hvo)
                 self.global_density_bins[idx],  # 6: global_density_bins
                 self.tempo_bins[idx],       # 7: tempo_bin (categorical)
-                self.kick_density_bins[idx],  # 8: kick_density_bins
-                self.snare_density_bins[idx], # 9: snare_density_bins
-                self.hat_density_bins[idx],  # 10: hat_density_bins
-                self.tom_density_bins[idx],  # 11: tom_density_bins
-                self.cymbal_density_bins[idx],  # 12: cymbal_density_bins
-                self.kick_is_muted[idx],    # 13: kick_is_muted
-                self.snare_is_muted[idx],   # 14: snare_is_muted
-                self.hat_is_muted[idx],     # 15: hat_is_muted
-                self.tom_is_muted[idx],     # 16: tom_is_muted
-                self.cymbal_is_muted[idx])  # 17: cymbal_is_muted
+                self.kick_is_muted[idx],    # 8: kick_is_muted
+                self.snare_is_muted[idx],   # 9: snare_is_muted
+                self.hat_is_muted[idx],     # 10: hat_is_muted
+                self.tom_is_muted[idx],     # 11: tom_is_muted
+                self.cymbal_is_muted[idx])  # 12: cymbal_is_muted
 
     def __repr__(self):
         text =  f"    -------------------------------------\n"
@@ -1058,7 +1053,7 @@ class Groove2Drum2BarDataset(Dataset):
             if genre.lower() == g.lower():
                 return self.genre_mapping[g]
 
-        return self.genre_mapping["unknown"]
+        assert False, f"Genre {genre} not found in genre_mapping"
 
     def get_genre_histogram(self):
         genre_histogram = {genre: 0 for genre in self.genre_mapping.keys()}

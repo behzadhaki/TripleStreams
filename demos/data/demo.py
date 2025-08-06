@@ -34,7 +34,7 @@ train_set = load_bz2_hvo_sequences(
 # Load Mega Dataset in `HVO_Sequence` format using a single command
 from data import load_bz2_hvo_sequences
 train_set = load_bz2_hvo_sequences(
-    dataset_setting_json_path="data/dataset_json_settings/Balanced_5000_per_genre_performed_4_4.json",
+    dataset_setting_json_path="data/dataset_json_settings/Balanced_1000_performed_no_GMD.json",
     subset_tag="test",
     force_regenerate=False)
 collections = [hvo_seq.metadata["drummer"] for hvo_seq in train_set]

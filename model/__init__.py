@@ -1,39 +1,43 @@
-# loaders and samplers
-from model.Base.utils import get_hits_activation
-
-# BasicGrooveTransformer imports
-from model.Base.BasicGrooveTransformer import GrooveTransformer
-from model.Base.BasicGrooveTransformer import GrooveTransformerEncoder
-
-
-# VAE Imports
-import model.VAE.shared_model_components as VAE_components
-from model.VAE.MonotonicGrooveVAE import GrooveTransformerEncoderVAE
-
-# CompGenVAE Imports
-import model.CompGenVAE.components as CompGenComponents
-from model.CompGenVAE.CompGenVAE import ComplexityGenreVAE
-
-# GenVAE Imports
-import model.GenVAE.components as GenreComponents
-from model.GenVAE.GenVAE import GenreVAE
-
-# GenDensityTempoVAE Imports
-import model.GenDensityTempoVAE.components as GenDensityTempoComponents
-from model.GenDensityTempoVAE.GenDensityTempoVAE import GenreDensityTempoVAE
-
-# GenGlobalDenMuteVAE Imports
-import model.GenGlobalDenMuteVAE.components as GenGlobalDenMuteComponents
-from model.GenGlobalDenMuteVAE.GenGlobalDenMuteVAE import GenreGlobalDensityWithVoiceMutesVAE
-
-# GenGlobalDenMuteVAE Imports
-import model.GenMuteVAE.components as GenreWithVoiceMutesVAEComponents
-from model.GenMuteVAE.GenMuteVAE import GenreWithVoiceMutesVAE
+# MuteLatentGenreInputVAE Imports
+from model.MuteLatentGenreInputVAE.model import MuteLatentGenreInputVAE
 
 # GenMuteVAEMultiTask Imports
-import model.GenMuteVAEMultiTask.components as GenreWithVoiceMutesMultiTaskComponents
-from model.GenMuteVAEMultiTask.GenMuteVAEMultiTask import GenreWithVoiceMutesMultiTaskVAE
+from model.MuteGenreLatentVAE.model import MuteGenreLatentVAE
 
-# VoiceMutesMultiTaskVAE Imports
-import model.MuteVAEMultiTask.components as VoiceMutesMultiTaskVAEComponents
-from model.MuteVAEMultiTask.VoiceMutesMultiTaskVAE import VoiceMutesMultiTaskVAE
+# MuteVAE Imports
+from model.MuteVAE.model import MuteVAE
+
+# BaseVAE Imports
+from model.BaseVAE.model import BaseVAE
+
+# GenreClassifier Imports
+from model.GenreClassifier.model import GenreClassifier
+
+import torch
+def load_model(model_path, model_class, params_dict=None, is_evaluating=True, device=None):
+    try:
+        if device is not None:
+            loaded_dict = torch.load(model_path, map_location=device)
+        else:
+            loaded_dict = torch.load(model_path)
+    except:
+        loaded_dict = torch.load(model_path, map_location=torch.device('cpu'))
+
+    if params_dict is None:
+        if 'params' in loaded_dict:
+            params_dict = loaded_dict['params']
+        else:
+            raise Exception(f"Could not instantiate model as params_dict is not found. "
+                            f"Please provide a params_dict either as a json path or as a dictionary")
+
+    if isinstance(params_dict, str):
+        import json
+        with open(params_dict, 'r') as f:
+            params_dict = json.load(f)
+
+    model = model_class(params_dict)
+    model.load_state_dict(loaded_dict["model_state_dict"])
+    if is_evaluating:
+        model.eval()
+
+    return model
