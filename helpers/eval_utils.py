@@ -5,10 +5,10 @@ from eval.GrooveEvaluator import load_evaluator_template
 from eval.UMAP import UMapper
 import tqdm
 import time
-from model import BaseVAE, MuteVAE, MuteGenreLatentVAE, MuteLatentGenreInputVAE
+from model import BaseVAE, MuteVAE, MuteGenreLatentVAE, MuteLatentGenreInputVAE, TripleStreamsVAE
 
 from logging import getLogger
-logger = getLogger("helpers.MuteGenreLatentVAE.eval_utils")
+logger = getLogger("helpers.eval_utils")
 logger.setLevel("DEBUG")
 from data import Groove2Drum2BarDataset
 
@@ -43,6 +43,16 @@ def predict_using_batch_data(batch_data, model_, device):
                 tom_is_muted=tom_is_muted,
                 cymbal_is_muted=cymbal_is_muted)
     elif isinstance(model_, MuteGenreLatentVAE) or isinstance(model_, MuteLatentGenreInputVAE):
+        with torch.no_grad():
+            hvo, latent_z = model_.predict(
+                flat_hvo_groove=flat_hvo_groove,
+                genre_tags=genre_tags,
+                kick_is_muted=kick_is_muted,
+                snare_is_muted=snare_is_muted,
+                hat_is_muted=hat_is_muted,
+                tom_is_muted=tom_is_muted,
+                cymbal_is_muted=cymbal_is_muted)
+    elif isinstance(model_, TripleStreamsVAE):
         with torch.no_grad():
             hvo, latent_z = model_.predict(
                 flat_hvo_groove=flat_hvo_groove,

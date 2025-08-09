@@ -10,8 +10,12 @@ from model.MuteVAE.model import MuteVAE
 # BaseVAE Imports
 from model.BaseVAE.model import BaseVAE
 
+# TripleStreamVAE Imports
+from model.TripleStreamsVAE.model import TripleStreamsVAE
+
 # GenreClassifier Imports
 from model.GenreClassifier.model import GenreClassifier
+
 
 import torch
 def load_model(model_path, model_class, params_dict=None, is_evaluating=True, device=None):
