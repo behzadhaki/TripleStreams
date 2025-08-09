@@ -9,6 +9,19 @@ import numpy as np
 
 import numpy as np
 
+import numpy as np
+import zarr
+import json
+from collections.abc import Mapping, Sequence
+
+def _is_jsonable(x):
+    try:
+        json.dumps(x)
+        return True
+    except TypeError:
+        return False
+
+
 def compare_sequences_masked(a, b, positive_thresh=0.0):
     """
     Compare two sequences in [0,1] only at indices where either value > positive_thresh.
@@ -82,9 +95,20 @@ def compare_sequences_masked(a, b, positive_thresh=0.0):
     return results
 
 
+def get_unique_identifier(meta):
+    if ("taptamdrum" in meta["collection"]):
+        mode = "simple" if "simple" in meta["stream_0"] else "complex"
+        tag = "ttd_" + "-".join(meta['collection'].split("_")[-3:]) + "_" + "_".join(
+            sorted([meta['stream_0'].split("_")[-1],
+                    meta['stream_1'].split("_")[-1],
+                    meta['stream_2'].split("_")[-1],
+                    meta['stream_3'].split("_")[-1]]))
+    else:
+        tag = meta['collection'] + "_" + "_".join(
+            sorted([meta['stream_0'], meta['stream_1'], meta['stream_2'], meta['stream_3']]))
+    return tag
 
-
-def compile_data_for_a_single_dataset_pkl(data_dir, name):
+def compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=None):
     assert name.endswith('.pkl.bz2'), "Dataset name mustend with .pkl.bz2"
 
     # print the structure of each dataset
@@ -104,26 +128,8 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name):
     accent_v_thresh = 0.6
 
     # Extract control features for all samples
-    dataset = {
-        "input_hvos": [],    #  added √
-        "output_hvos": [],   #  added √
-        "flat_out_hvos": [], # added √
-        # "full_hvo_sequences": [],
-        "sample_id": [],        # added √
-        "collection": [],       # added √
-        "all_metadata": [],     # added √
-        "qpm": [],              # added √
-        "OF_Input Hamming": [],     # output flattened to input hamming distance         # added √
-        "OF_Input Hamming Accent": [],       # added √
-        "OS1_OF Jaccard": [],  # Stream 1 of Output's jaccard distance to flattened input       # added √
-        "OS2_OF Jaccard": [],  # Stream 2 of Output's jaccard distance to flattened input       # added √
-        "OS3_OF Jaccard": [],  # Stream 3 of Output's jaccard distance to flattened input       # added √
-        "pearson": [],         # added √
-        "cosine": [],          # added √
-        "euclidean_similarity": [],  # added √
-        "mae_similarity": [],   # added √
-        "dtw_similarity": [],  # added √
-    }
+    
+    datasets = {} if prev_datasets is None else prev_datasets
 
     def mix_streams_into_hvo(streams_list):
         n_streams = len(streams_list)
@@ -141,7 +147,28 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name):
             sample_id = hvo_sample.metadata["sample_id"]
             collection = hvo_sample.metadata["collection"]
             tempo = hvo_sample.tempos[0].qpm
-            all_metadata = hvo_sample.metadata
+            metadata = hvo_sample.metadata
+            dataset_tag = get_unique_identifier(metadata)
+            if dataset_tag not in datasets:
+                datasets[dataset_tag] = {
+                    "input_hvos": [],    #  added √
+                    "output_hvos": [],   #  added √
+                    "flat_out_hvos": [], # added √
+                    "sample_id": [],        # added √
+                    "collection": [],       # added √
+                    "metadata": [],     # added √
+                    "qpm": [],              # added √
+                    "OF_Input Hamming": [],     # output flattened to input hamming distance         # added √
+                    "OF_Input Hamming Accent": [],       # added √
+                    "OS1_OF Jaccard": [],  # Stream 1 of Output's jaccard distance to flattened input       # added √
+                    "OS2_OF Jaccard": [],  # Stream 2 of Output's jaccard distance to flattened input       # added √
+                    "OS3_OF Jaccard": [],  # Stream 3 of Output's jaccard distance to flattened input       # added √
+                    "pearson": [],         # added √
+                    "cosine": [],          # added √
+                    "euclidean_similarity": [],  # added √
+                    "mae_similarity": [],   # added √
+                    "dtw_similarity": [],  # added √
+                }
 
             # get num of time steps
             t_steps = hvo_sample.hits.shape[0]
@@ -160,32 +187,32 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name):
             vel_correlations_dict = compare_sequences_masked(v1, v2, positive_thresh=0.0)
 
             for streams_permuation in list_permutations(streams):
-                dataset["sample_id"].append(hvo_sample.metadata['sample_id'])
-                dataset["collection"].append(hvo_sample.metadata['collection'])
-                dataset["all_metadata"].append(hvo_sample.metadata)
-                dataset["qpm"].append(tempo)
-                dataset["input_hvos"].append(input_hvo)
-                dataset["flat_out_hvos"].append(flat_out_hvo)
-                dataset["output_hvos"].append(mix_streams_into_hvo(streams_permuation))
-                dataset["OF_Input Hamming"].append(i_fo_hamming)
-                dataset["OF_Input Hamming Accent"].append(i_fo_accent_hamming)
-                dataset["OS1_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[0][:, 0]), 6))
-                dataset["OS2_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[1][:, 0]), 6))
-                dataset["OS3_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[2][:, 0]), 6))
-                dataset["pearson"].append(vel_correlations_dict["pearson"])
-                dataset["cosine"].append(vel_correlations_dict["cosine"])
-                dataset["euclidean_similarity"].append(vel_correlations_dict["euclidean_similarity"])
-                dataset["mae_similarity"].append(vel_correlations_dict["mae_similarity"])
-                dataset["dtw_similarity"].append(vel_correlations_dict["dtw_similarity"])
+                datasets[dataset_tag]["sample_id"].append(hvo_sample.metadata['sample_id'])
+                datasets[dataset_tag]["collection"].append(hvo_sample.metadata['collection'])
+                datasets[dataset_tag]["metadata"].append(hvo_sample.metadata)
+                datasets[dataset_tag]["qpm"].append(tempo)
+                datasets[dataset_tag]["input_hvos"].append(input_hvo)
+                datasets[dataset_tag]["flat_out_hvos"].append(flat_out_hvo)
+                datasets[dataset_tag]["output_hvos"].append(mix_streams_into_hvo(streams_permuation))
+                datasets[dataset_tag]["OF_Input Hamming"].append(i_fo_hamming)
+                datasets[dataset_tag]["OF_Input Hamming Accent"].append(i_fo_accent_hamming)
+                datasets[dataset_tag]["OS1_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[0][:, 0]), 6))
+                datasets[dataset_tag]["OS2_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[1][:, 0]), 6))
+                datasets[dataset_tag]["OS3_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[2][:, 0]), 6))
+                datasets[dataset_tag]["pearson"].append(vel_correlations_dict["pearson"])
+                datasets[dataset_tag]["cosine"].append(vel_correlations_dict["cosine"])
+                datasets[dataset_tag]["euclidean_similarity"].append(vel_correlations_dict["euclidean_similarity"])
+                datasets[dataset_tag]["mae_similarity"].append(vel_correlations_dict["mae_similarity"])
+                datasets[dataset_tag]["dtw_similarity"].append(vel_correlations_dict["dtw_similarity"])
 
-    return dataset
+    return datasets
 
 def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls):
     """
     Compile data for multiple datasets.
     """
     # create a directory to save the compiled data
-    compiled_data_dir = os.path.join(data_dir, "compiled_data")
+    compiled_data_dir = os.path.join(data_dir, "../compiled_data")
     os.makedirs(compiled_data_dir, exist_ok=True)
     dataset_dict = {}
 
@@ -193,21 +220,18 @@ def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls):
     for dataset_pkl_fname in dataset_pkls:
         if dataset_pkl_fname.endswith(".pkl.bz2") and dataset_pkl_fname.split(".")[0].split("_")[0] not in pkl_fnames:
             pkl_fnames.append(dataset_pkl_fname.split(".")[0].split("_")[0])
-    final_dict_fname = "_".join(pkl_fnames) + ".pkl.bz2"
-    print("Final dictionary filename will be:", final_dict_fname)
-    for name in (dataset_pkls):
-        current_dataset = compile_data_for_a_single_dataset_pkl(data_dir, name)
 
-        # add the dataset to the dictionary
-        for key, val in current_dataset.items():
-            if key not in dataset_dict:
-                dataset_dict[key] = []
-            dataset_dict[key].extend(val)
+
+    for name in (dataset_pkls):
+        dataset_dict = compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=dataset_dict)
 
     # save the dataset
-    compiled_data_path = os.path.join(compiled_data_dir, final_dict_fname)
-    with bz2.BZ2File(compiled_data_path, 'wb') as f:
-        pickle.dump(dataset_dict, f)
+    for key, value in dataset_dict.items():
+        final_dict_fname = f"{key}.pkl.bz2"
+        print("Final dictionary filename will be:", final_dict_fname)
+        compiled_data_path = os.path.join(compiled_data_dir, final_dict_fname)
+        with bz2.BZ2File(compiled_data_path, 'wb') as f:
+            pickle.dump(value, f)
 
     # delete the dataset_dict to free memory
     del dataset_dict
