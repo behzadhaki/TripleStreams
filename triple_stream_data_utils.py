@@ -15,6 +15,7 @@ except:
 # loader
 import bz2, pickle
 
+
 class NumpyCompatUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         # Redirect legacy/private numpy path to the public one
@@ -465,15 +466,14 @@ def create_heatmap_histogram_from_lists(
 
     nx, ny = x_vals.size, y_vals.size
 
-    # --- Vectorized counting (very fast) ---
-    # Flatten the 2D (y,x) code pairs into 1D bins, then bincount
+    # --- Vectorized counting ---
     flat_idx = np.ravel_multi_index((y_inv, x_inv), dims=(ny, nx))
     counts_true = np.bincount(flat_idx, minlength=ny * nx).reshape(ny, nx).astype(np.int32)
 
     # --- Color matrix (optionally clipped) ---
     counts_for_color = np.minimum(counts_true, clip_counts_at) if clip_counts_at is not None else counts_true
 
-    # --- Text annotations (vectorized) ---
+    # --- Text annotations ---
     if saturate_colors_only:
         text_base = counts_true
     else:
@@ -484,8 +484,15 @@ def create_heatmap_histogram_from_lists(
     else:
         text_arr = np.where(text_base > 0, text_base.astype(str), "")
 
+    # --- Axis labels ---
     x_ticks = x_vals.astype(str).tolist()
-    y_ticks = y_vals.astype(str).tolist()
+
+    # Format y-axis labels to two decimal places if numeric
+    try:
+        y_ticks = [f"{float(val):.2f}" for val in y_vals]
+    except ValueError:
+        # Some values aren't numeric → fallback to string
+        y_ticks = [str(val) for val in y_vals]
 
     if title is None:
         title = f"Heatmap: {xlabel} vs {ylabel} (unique values)"

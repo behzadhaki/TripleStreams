@@ -1,25 +1,107 @@
 from triple_stream_data_utils import  get_split_to_streams, Jaccard_similarity, hamming_distance, print_all_datasets_structure, get_split_n_bar_phrases, get_accent_hits_from_velocities, list_permutations
 
 # LOAD DATASETS
-import os, pickle, bz2
-import numpy as np
 import tqdm
-
+import os
+import bz2
+import pickle
+import io
 import numpy as np
 
-import numpy as np
+# ------------ helpers: encode/decode arrays as .npy bytes ------------
+def _ndarray_to_npy_bytes(arr, allow_pickle=False):
+    buf = io.BytesIO()
+    # .npy format is versioned & stable; this avoids numpy's pickle reducers
+    np.save(buf, arr, allow_pickle=allow_pickle)
+    return buf.getvalue()
 
-import numpy as np
-import zarr
-import json
-from collections.abc import Mapping, Sequence
+def _npy_bytes_to_ndarray(b, allow_pickle=False):
+    buf = io.BytesIO(b)
+    return np.load(buf, allow_pickle=allow_pickle)
 
-def _is_jsonable(x):
-    try:
-        json.dumps(x)
-        return True
-    except TypeError:
-        return False
+def _encode_for_pickle(obj, allow_pickle_arrays=False):
+    """
+    Recursively convert ndarrays into a small marker dict with .npy bytes.
+    Everything else is returned as-is (and will be pickled normally).
+    """
+    if isinstance(obj, np.ndarray):
+        return {"__npy__": True, "data": _ndarray_to_npy_bytes(obj, allow_pickle=allow_pickle_arrays)}
+    elif isinstance(obj, dict):
+        return {k: _encode_for_pickle(v, allow_pickle_arrays) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        t = type(obj)
+        return t(_encode_for_pickle(v, allow_pickle_arrays) for v in obj)
+    else:
+        return obj
+
+def _decode_after_unpickle(obj, allow_pickle_arrays=False):
+    """
+    Inverse of _encode_for_pickle: turn marker dicts back into ndarrays.
+    """
+    if isinstance(obj, dict):
+        if obj.keys() == {"__npy__", "data"} and obj.get("__npy__") is True:
+            return _npy_bytes_to_ndarray(obj["data"], allow_pickle=allow_pickle_arrays)
+        else:
+            return {k: _decode_after_unpickle(v, allow_pickle_arrays) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        t = type(obj)
+        return t(_decode_after_unpickle(v, allow_pickle_arrays) for v in obj)
+    else:
+        return obj
+
+def load_compiled_dataset_pkl_bz2(dataset_pkl_bz2, *, allow_pickle_arrays=False):
+    """
+    Load a compiled dataset saved by compile_data_for_multiple_datasets_pkl().
+    """
+    assert dataset_pkl_bz2.endswith(".pkl.bz2"), "Dataset name must end with .pkl.bz2"
+    compiled_data_path = dataset_pkl_bz2
+    if not os.path.exists(compiled_data_path):
+        raise FileNotFoundError(f"No compiled dataset found at {compiled_data_path}")
+
+    with bz2.BZ2File(compiled_data_path, 'rb') as f:
+        raw = pickle.load(f)
+    return _decode_after_unpickle(raw, allow_pickle_arrays=allow_pickle_arrays)
+# ---------------------------------------------------------------------
+
+
+def compile_data_for_multiple_datasets_pkl(data_dir, dataset_pkls, *, pickle_protocol=4, allow_pickle_arrays=False):
+    """
+    Compile data for multiple datasets, then save with bz2+pickle while storing NumPy arrays
+    as .npy bytes inside the pickle for NumPy-version resilience.
+
+    Parameters
+    ----------
+    pickle_protocol : int
+        Use 4 for widest Python 3 compatibility. Use 5 if you control both ends (Py>=3.8).
+    allow_pickle_arrays : bool
+        If you have object-dtype arrays and need them preserved, set True.
+        (Be aware of the usual security caveats when loading pickled/allow-pickled content.)
+    """
+    compiled_data_dir = os.path.join(data_dir, "../compiled_data")
+    os.makedirs(compiled_data_dir, exist_ok=True)
+    dataset_dict = {}
+
+    pkl_fnames = []
+    for dataset_pkl_fname in dataset_pkls:
+        if dataset_pkl_fname.endswith(".pkl.bz2") and dataset_pkl_fname.split(".")[0].split("_")[0] not in pkl_fnames:
+            pkl_fnames.append(dataset_pkl_fname.split(".")[0].split("_")[0])
+
+    for name in dataset_pkls:
+        dataset_dict = compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=dataset_dict)
+
+    # Save each dataset as bz2+pickle with arrays encoded as .npy bytes
+    for key, value in dataset_dict.items():
+        final_dict_fname = f"{key}.pkl.bz2"
+        print("Final dictionary filename will be:", final_dict_fname)
+        compiled_data_path = os.path.join(compiled_data_dir, final_dict_fname)
+
+        safe_value = _encode_for_pickle(value, allow_pickle_arrays=allow_pickle_arrays)
+        with bz2.BZ2File(compiled_data_path, 'wb') as f:
+            pickle.dump(safe_value, f, protocol=pickle_protocol)
+
+    del dataset_dict
+
+
 
 
 def compare_sequences_masked(a, b, positive_thresh=0.0):
@@ -104,8 +186,8 @@ def get_unique_identifier(meta):
                     meta['stream_2'].split("_")[-1],
                     meta['stream_3'].split("_")[-1]]))
     else:
-        tag = meta['collection'] + "_" + "_".join(
-            sorted([meta['stream_0'], meta['stream_1'], meta['stream_2'], meta['stream_3']]))
+        tag = meta['collection'].split("_")[0] if "lmd" in meta['collection'] else meta['collection']
+        tag += ("_" + "_".join(sorted([meta['stream_0'], meta['stream_1'], meta['stream_2'], meta['stream_3']])))
     return tag
 
 def compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=None):
@@ -236,11 +318,13 @@ def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls):
     # delete the dataset_dict to free memory
     del dataset_dict
 
+
+
 if __name__ == "__main__":
 
     # NON LMD DATASETS
     data_dir = "data/triple_streams/split_2bars/rest"
-    dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])
+    dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])[::-1]
 
     for dataset_pkl_fname in dataset_pkls:
         if dataset_pkl_fname.endswith(".pkl.bz2"):
