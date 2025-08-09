@@ -438,91 +438,80 @@ import plotly.graph_objects as go
 import numpy as np
 import plotly.graph_objects as go
 
-def create_heatmap_histogram_from_lists(feat1, feat2,
-                                        xlabel="X", ylabel="Y",
-                                        title=None, show_zeros=False,
-                                        figsize=(12, 6), clip_counts_at=None):
-    """
-    Creates an interactive heatmap histogram from two lists (x, y).
-    Shows frequency counts in each cell like a confusion matrix.
+import numpy as np
+import plotly.graph_objects as go
 
-    Parameters
-    ----------
-    feat1 : list
-        Values for x-axis (categorical or numeric)
-    feat2 : list
-        Values for y-axis (categorical or numeric)
-    xlabel : str
-        Label for x-axis
-    ylabel : str
-        Label for y-axis
-    title : str or None
-        Plot title (default auto)
-    show_zeros : bool
-        Whether to display "0" in empty cells
-    figsize : tuple(float, float)
-        Figure size in inches (width, height)
-    xlim : tuple(float, float)
-        Limits for x-axis
-    ylim : tuple(float, float)
-        Limits for y-axis
+import numpy as np
+import plotly.graph_objects as go
 
-    Returns
-    -------
-    plotly.graph_objects.Figure
-    """
+def create_heatmap_histogram_from_lists(
+    feat1, feat2,
+    xlabel="X", ylabel="Y",
+    title=None, show_zeros=False,
+    figsize=(12, 6),
+    clip_counts_at=None,
+    saturate_colors_only=False,  # if True: colors capped, text shows true counts
+):
     if len(feat1) != len(feat2):
         raise ValueError("feat1 and feat2 must have the same length.")
 
-    # Convert to numpy arrays for convenience
-    x_arr = np.array(feat1, dtype=object)
-    y_arr = np.array(feat2, dtype=object)
+    # --- Vectorized unique + indexing ---
+    x_arr = np.asarray(feat1, dtype=object)
+    y_arr = np.asarray(feat2, dtype=object)
 
-    # Unique, sorted categories (stringified for consistent tick labels)
-    x_vals = sorted(set(x_arr.tolist()))
-    y_vals = sorted(set(y_arr.tolist()))
-    x_index = {v: i for i, v in enumerate(x_vals)}
-    y_index = {v: i for i, v in enumerate(y_vals)}
+    # Sorted unique values + inverse indices (maps each element to its code)
+    x_vals, x_inv = np.unique(x_arr, return_inverse=True)
+    y_vals, y_inv = np.unique(y_arr, return_inverse=True)
 
-    # Build count matrix
-    count_matrix = np.zeros((len(y_vals), len(x_vals)), dtype=int)
-    for xv, yv in zip(x_arr, y_arr):
-        count_matrix[y_index[yv], x_index[xv]] += 1
+    nx, ny = x_vals.size, y_vals.size
 
-    # Labels for axes (strings for ticks)
-    x_ticks = [str(v) for v in x_vals]
-    y_ticks = [str(v) for v in y_vals]
+    # --- Vectorized counting (very fast) ---
+    # Flatten the 2D (y,x) code pairs into 1D bins, then bincount
+    flat_idx = np.ravel_multi_index((y_inv, x_inv), dims=(ny, nx))
+    counts_true = np.bincount(flat_idx, minlength=ny * nx).reshape(ny, nx).astype(np.int32)
 
-    # Text annotations (counts)
-    text_annotations = []
-    for i in range(len(y_ticks)):
-        row = []
-        for j in range(len(x_ticks)):
-            c = int(count_matrix[i, j]) if clip_counts_at is None else min(int(count_matrix[i, j]), clip_counts_at)
-            row.append(str(c) if (c > 0 or show_zeros) else "")
-        text_annotations.append(row)
+    # --- Color matrix (optionally clipped) ---
+    counts_for_color = np.minimum(counts_true, clip_counts_at) if clip_counts_at is not None else counts_true
 
-    # Title
+    # --- Text annotations (vectorized) ---
+    if saturate_colors_only:
+        text_base = counts_true
+    else:
+        text_base = counts_for_color
+
+    if show_zeros:
+        text_arr = text_base.astype(str)
+    else:
+        text_arr = np.where(text_base > 0, text_base.astype(str), "")
+
+    x_ticks = x_vals.astype(str).tolist()
+    y_ticks = y_vals.astype(str).tolist()
+
     if title is None:
         title = f"Heatmap: {xlabel} vs {ylabel} (unique values)"
 
-    # Convert figsize in inches to pixels (assuming 100 dpi)
+    # inches -> px (100 dpi)
     plot_width = int(figsize[0] * 100)
     plot_height = int(figsize[1] * 100)
 
-    fig = go.Figure(data=go.Heatmap(
-        z=count_matrix,
+    heatmap_kwargs = dict(
+        z=counts_for_color,
         x=x_ticks,
         y=y_ticks,
-        text=text_annotations,
+        text=text_arr,
         texttemplate="%{text}",
         textfont={"size": 6},
-        colorscale='Plasma',
+        colorscale="Plasma",
         showscale=True,
         colorbar=dict(title="Count"),
         hovertemplate=f'{xlabel}: %{{x}}<br>{ylabel}: %{{y}}<br>Count: %{{z}}<extra></extra>'
-    ))
+    )
 
+    # Force color scale to capped range when clipping
+    if clip_counts_at is not None:
+        heatmap_kwargs.update(dict(zmin=0, zmax=clip_counts_at))
+
+    fig = go.Figure(data=go.Heatmap(**heatmap_kwargs))
     fig.update_layout(
         title=title,
         xaxis_title=xlabel,
@@ -547,7 +536,9 @@ def plot_scatter_distribution(feat1, feat2, xlabel, ylabel, title=None, alpha=0.
     plt.ylabel(ylabel)
     if title is not None:
         plt.title(title)
-    plt.xlim(xlim)
-    plt.ylim(ylim)
+    if xlim is not None:
+        plt.xlim(xlim)
+    if ylim is not None:
+        plt.ylim(ylim)
     plt.tight_layout()
     plt.show()
