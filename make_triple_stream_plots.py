@@ -17,6 +17,13 @@ import argparse
 from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
+
+def _to_pylist(x):
+    try:
+        return x.tolist()
+    except AttributeError:
+        return list(x)
+
 from tqdm.auto import tqdm
 
 from bokeh.io import output_file, save
@@ -25,6 +32,9 @@ from bokeh.models import (
     LinearColorMapper, ColorBar, BasicTicker, FixedTicker,
     Tabs, Panel, LabelSet, HoverTool, Range1d
 )
+
+from bokeh.models import FuncTickFormatter
+
 from bokeh.plotting import figure
 from bokeh.layouts import column
 from bokeh.palettes import Viridis256
@@ -110,15 +120,18 @@ def compute_hist2d_custom(
             range=[[xmin, xmax], [ymin, ymax]]
         )
     else:
-        # Custom binning with perfect alignment
+        # Custom binning with perfect alignment starting at (0,0)
         step = 1 / 32
-        # Calculate number of bins needed to cover the range
-        x_bins = int(np.ceil((xmax - xmin) / step)) + 1
-        y_bins = int(np.ceil((ymax - ymin) / step)) + 1
 
-        # Create edges starting exactly at xmin/ymin
-        xedges = np.linspace(xmin, xmin + x_bins * step, x_bins + 1)
-        yedges = np.linspace(ymin, ymin + y_bins * step, y_bins + 1)
+        # Calculate edges starting exactly at 0
+        xedges = np.arange(0, xmax + step, step)
+        yedges = np.arange(0, ymax + step, step)
+
+        # Ensure we cover the full range
+        if xedges[-1] < xmax:
+            xedges = np.append(xedges, xedges[-1] + step)
+        if yedges[-1] < ymax:
+            yedges = np.append(yedges, yedges[-1] + step)
 
         # Compute histogram using these exact edges
         H, xedges, yedges = np.histogram2d(
@@ -168,13 +181,9 @@ def max_label_position(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
 
 
 def make_quad_source_sparse(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
-    """
-    Simple quad source creation for heatmap.
-    Returns ColumnDataSource and tick positions.
-    """
     ny, nx = H.shape
 
-    # Simple: use all edges as provided
+    # Use all edges as provided
     xleft = xedges[:-1]
     xright = xedges[1:]
     ybottom = yedges[:-1]
@@ -196,13 +205,9 @@ def make_quad_source_sparse(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarra
                 ycenter.append(0.5 * (ybottom[i] + ytop[i]))
                 counts.append(c)
 
-    # All bin centers for grid lines
-    xcenters = 0.5 * (xleft + xright)
-    ycenters = 0.5 * (ybottom + ytop)
-
-    # Return all ticks for grid lines
-    x_ticks = xcenters.tolist()
-    y_ticks = ycenters.tolist()
+    # Calculate tick positions at bin centers
+    x_ticks = [0.5 * (xedges[i] + xedges[i+1]) for i in range(len(xedges)-1)]
+    y_ticks = [0.5 * (yedges[i] + yedges[i+1]) for i in range(len(yedges)-1)]
 
     src = ColumnDataSource(dict(
         left=xs_left, right=xs_right, bottom=ys_bottom, top=ys_top,
@@ -241,7 +246,7 @@ def build_layout(root: str,
         raise RuntimeError("None of the provided dataset_tags exist under the root path.")
 
     # Load datasets
-    dataset_feature_arrays: Dict[str, Dict[str, np.ndarray]] = {}
+    dataset_feature_arrays = {}
     print("Loading datasets...")
     for tag in tqdm(valid_tags, desc="Datasets"):
         path = available[tag]
@@ -258,35 +263,34 @@ def build_layout(root: str,
         x, y = x[mask], y[mask]
         dataset_feature_arrays[tag] = {feature1: x, feature2: y}
 
-    # Global ranges (robust, for consistent axes)
-    all_x = np.concatenate([dataset_feature_arrays[tag][feature1] for tag in valid_tags])
-    all_y = np.concatenate([dataset_feature_arrays[tag][feature2] for tag in valid_tags])
-
-    # If no bins specified, use default range [0,1]
-    if n_bins_feat1 is None and n_bins_feat2 is None:
+    # Global ranges (force [0,1] when no bins specified)
+    if n_bins_feat1 is None or n_bins_feat2 is None:
         x_range = (0.0, 1.0)
         y_range = (0.0, 1.0)
     else:
+        all_x = np.concatenate([dataset_feature_arrays[tag][feature1] for tag in valid_tags])
+        all_y = np.concatenate([dataset_feature_arrays[tag][feature2] for tag in valid_tags])
         x_min, x_max = np.percentile(all_x, [1, 99])
         y_min, y_max = np.percentile(all_y, [1, 99])
-
         pad_x = 0.02 * (x_max - x_min) if x_max > x_min else 1.0
         pad_y = 0.02 * (y_max - y_min) if y_max > y_min else 1.0
         x_range = (float(x_min - pad_x), float(x_max + pad_x))
         y_range = (float(y_min - pad_y), float(y_max + pad_y))
 
-    # Build heatmaps (cache), sparse quads, and max labels + ticks
-    heatmap_meta: Dict[str, Dict[str, Any]] = {}
-    quad_sources: Dict[str, ColumnDataSource] = {}
-    labels_meta: Dict[str, Dict[str, Any]] = {}
-    xticks_meta: Dict[str, List[float]] = {}  # All ticks for grid
-    yticks_meta: Dict[str, List[float]] = {}  # All ticks for grid
-    xticks_labels_meta: Dict[str, Dict[str, str]] = {}  # Labels for every other tick
-    yticks_labels_meta: Dict[str, Dict[str, str]] = {}  # Labels for every other tick
+    # Create shared range objects
+    x_range_obj = Range1d(x_range[0], x_range[1])
+    y_range_obj = Range1d(y_range[0], y_range[1])
+
+    # Build heatmaps
+    heatmap_meta = {}
+    quad_sources = {}
+    labels_meta = {}
+    xticks_meta = {}
+    yticks_meta = {}
+    xticks_labels_meta = {}
+    yticks_labels_meta = {}
 
     print("Preparing heatmap caches...")
-    if force_recalc:
-        print("Force recalculation enabled - ignoring cache")
     for tag in tqdm(valid_tags, desc="Heatmaps"):
         data_path = available[tag]
         cache_path = cache_key(cache_dir, tag, feature1, feature2, n_bins_feat1, n_bins_feat2)
@@ -294,33 +298,24 @@ def build_layout(root: str,
         y = dataset_feature_arrays[tag][feature2]
 
         if is_cache_valid(cache_path, data_path, force_recalc):
-            try:
-                cached = np.load(cache_path, allow_pickle=True)
-                H = cached["H"]
-                xedges = cached["xedges"]
-                yedges = cached["yedges"]
-                # Verify cached data matches expected dimensions
-                if H.shape != (len(yedges) - 1, len(xedges) - 1):
-                    raise ValueError("Cached data dimensions don't match")
-            except Exception as e:
-                print(f"Error loading cached data: {e}, recalculating...")
-                H, xedges, yedges = compute_hist2d_custom(x, y, x_range, y_range, n_bins_feat1, n_bins_feat2)
-                np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
+            cached = np.load(cache_path, allow_pickle=True)
+            H = cached["H"]
+            xedges = cached["xedges"]
+            yedges = cached["yedges"]
         else:
             H, xedges, yedges = compute_hist2d_custom(x, y, x_range, y_range, n_bins_feat1, n_bins_feat2)
             np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
 
         heatmap_meta[tag] = {"H": H.astype(float), "xedges": xedges, "yedges": yedges}
-
         src, x_ticks, y_ticks = make_quad_source_sparse(H, xedges, yedges)
         quad_sources[tag] = src
-        xticks_meta[tag] = x_ticks  # All ticks for grid lines
-        yticks_meta[tag] = y_ticks  # All ticks for grid lines
+        xticks_meta[tag] = x_ticks
+        yticks_meta[tag] = y_ticks
 
-        # Create labels for every other tick
-        x_labels = {tick: f"{tick:.2f}" if i % 2 == 0 else ""
+        # Create labels for every 4th tick
+        x_labels = {tick: f"{tick:.2f}" if i % 4 == 0 else ""
                     for i, tick in enumerate(x_ticks)}
-        y_labels = {tick: f"{tick:.2f}" if i % 2 == 0 else ""
+        y_labels = {tick: f"{tick:.2f}" if i % 4 == 0 else ""
                     for i, tick in enumerate(y_ticks)}
         xticks_labels_meta[tag] = x_labels
         yticks_labels_meta[tag] = y_labels
@@ -328,40 +323,29 @@ def build_layout(root: str,
         lx, ly, ltext = max_label_position(H, xedges, yedges)
         labels_meta[tag] = {"x": [lx], "y": [ly], "text": [ltext]}
 
-    # Scatter with density coloring and jitter
+    # Scatter with density coloring
     rng = np.random.default_rng(12345)
     jitter_x = (x_range[1] - x_range[0]) * 0.005
     jitter_y = (y_range[1] - y_range[0]) * 0.005
 
-    scatter_sources: Dict[str, ColumnDataSource] = {}
-    print("Preparing scatter data with density coloring...")
+    scatter_sources = {}
+    print("Preparing scatter data...")
     for tag in tqdm(valid_tags, desc="Scatter"):
         x = dataset_feature_arrays[tag][feature1]
         y = dataset_feature_arrays[tag][feature2]
-
-        # Compute densities for all points
         H = heatmap_meta[tag]["H"]
         xedges = heatmap_meta[tag]["xedges"]
         yedges = heatmap_meta[tag]["yedges"]
         densities = compute_point_densities(x, y, H, xedges, yedges)
-
-        # Downsample if needed
         xs, ys, ds = downsample_pairs_with_density(x, y, densities, scatter_max_points)
-
-        # Apply jitter for visualization
         xs_vis = xs + rng.uniform(-jitter_x, jitter_x, size=xs.shape)
         ys_vis = ys + rng.uniform(-jitter_y, jitter_y, size=ys.shape)
-
-        # Store data for scatter (no need for original values since no hover)
         scatter_sources[tag] = ColumnDataSource(dict(
-            x=xs_vis, y=ys_vis,
-            density=ds
+            x=xs_vis, y=ys_vis, density=ds
         ))
 
-    # --- Figures ---
+    # Create figures with shared ranges
     TOOLS = "pan,wheel_zoom,box_zoom,reset,save"
-
-    # Color mapper (shared between scatter and heatmap)
     initial_H = heatmap_meta[valid_tags[0]]["H"]
     color_mapper = LinearColorMapper(
         palette=Viridis256,
@@ -369,206 +353,167 @@ def build_layout(root: str,
         high=float(np.max(initial_H)) if np.max(initial_H) > 0 else 1.0
     )
 
-    # Scatter with density coloring (no hover)
-    TOOLS_NO_HOVER = "pan,wheel_zoom,box_zoom,reset,save"
-
-    # Create shared range objects
-    x_range = Range1d(x_range[0], x_range[1])
-    y_range = Range1d(y_range[0], y_range[1])
-
-    # Scatter figure using shared ranges
+    # Scatter plot
     scatter_fig = figure(
         width=750, height=640,
-        x_range=x_range, y_range=y_range,  # Shared ranges
-        tools=TOOLS_NO_HOVER,
+        x_range=x_range_obj, y_range=y_range_obj,
+        tools="pan,wheel_zoom,box_zoom,reset,save",
         title=f"Scatter: {feature1} vs {feature2}",
-        output_backend="webgl",
+        output_backend="webgl"
     )
-
-    # Heatmap figure using the SAME shared ranges
-    heatmap_fig = figure(
-        width=750, height=640,
-        x_range=x_range, y_range=y_range,  # Same ranges
-        tools=TOOLS,
-        title=f"Heatmap: {feature1} vs {feature2}",
-        output_backend="webgl",
-    )
-
     scatter_renderer = scatter_fig.circle(
         "x", "y", source=scatter_sources[valid_tags[0]],
         size=5, fill_alpha=0.3, line_alpha=0,
         fill_color={'field': 'density', 'transform': color_mapper}
     )
 
-    scatter_fig.xaxis.axis_label = feature1
-    scatter_fig.yaxis.axis_label = feature2
-    scatter_fig.match_aspect = True
-    scatter_fig.grid.grid_line_alpha = 0.4
-
-    heatmap_fig.grid.grid_line_alpha = 0.4
-
-    quad_src_initial = quad_sources[valid_tags[0]]
+    # Heatmap plot
+    heatmap_fig = figure(
+        width=750, height=640,
+        x_range=x_range_obj, y_range=y_range_obj,
+        tools=TOOLS,
+        title=f"Heatmap: {feature1} vs {feature2}",
+        output_backend="webgl"
+    )
     quad_renderer = heatmap_fig.quad(
         left="left", right="right", bottom="bottom", top="top",
-        source=quad_src_initial,
+        source=quad_sources[valid_tags[0]],
         fill_color={'field': 'count', 'transform': color_mapper},
-        fill_alpha=1.0,
-        line_alpha=0.0,  # No lines between quads for flush appearance
+        fill_alpha=1.0, line_alpha=0.0
     )
 
-    # Hover (HEATMAP)
-    hover = HoverTool(
+    # Add hover tools
+    heatmap_hover = HoverTool(
         tooltips=[
-            ("feat1 =", "@x{0.00}"),
-            ("feat2 =", "@y{0.00}"),
-            ("count =", "@count{0,0}"),
+            (f"{feature1}", "@x{0.00}"),
+            (f"{feature2}", "@y{0.00}"),
+            ("Count", "@count{0,0}")
         ],
-        mode="mouse",
         renderers=[quad_renderer]
     )
-    heatmap_fig.add_tools(hover)
+    heatmap_fig.add_tools(heatmap_hover)
 
-    # One label only (max)
+    # Add max count label
     label_source = ColumnDataSource(data=labels_meta[valid_tags[0]])
-    labels = LabelSet(x='x', y='y', text='text', source=label_source,
-                      text_baseline="middle", text_align="center",
-                      text_font_size="10pt", text_color="white",
-                      background_fill_color="black", background_fill_alpha=0.25)
+    labels = LabelSet(
+        x='x', y='y', text='text', source=label_source,
+        text_baseline="middle", text_align="center",
+        text_font_size="10pt", text_color="white",
+        background_fill_color="black", background_fill_alpha=0.25
+    )
     heatmap_fig.add_layout(labels)
 
-    color_bar = ColorBar(color_mapper=color_mapper, ticker=BasicTicker(), label_standoff=8, location=(0, 0))
+    # Add color bars
+    color_bar = ColorBar(
+        color_mapper=color_mapper,
+        ticker=BasicTicker(),
+        label_standoff=8,
+        location=(0, 0)
+    )
     heatmap_fig.add_layout(color_bar, 'right')
-    scatter_fig.add_layout(color_bar, 'right')  # Add color bar to scatter too
+    scatter_fig.add_layout(color_bar, 'right')
 
-    heatmap_fig.xaxis.axis_label = feature1
-    heatmap_fig.yaxis.axis_label = feature2
-    heatmap_fig.match_aspect = True
+    # Configure axes
+    for fig in [scatter_fig, heatmap_fig]:
+        fig.xaxis.axis_label = feature1
+        fig.yaxis.axis_label = feature2
+        fig.match_aspect = True
+        fig.grid.grid_line_alpha = 0.4
 
-    # Tickers - show all grid lines, label every other
-    x_ticker = FixedTicker(ticks=xticks_meta[valid_tags[0]])
-    y_ticker = FixedTicker(ticks=yticks_meta[valid_tags[0]])
+        # Use the same tickers and formatters
+        fig.xaxis.ticker = FixedTicker(ticks=xticks_meta[valid_tags[0]])
+        fig.yaxis.ticker = FixedTicker(ticks=yticks_meta[valid_tags[0]])
 
-    # Configure tick formatting for initial dataset
-    from bokeh.models import FuncTickFormatter
-    x_labels_dict = xticks_labels_meta[valid_tags[0]]
-    y_labels_dict = yticks_labels_meta[valid_tags[0]]
+        x_formatter = FuncTickFormatter(code=f"""
+            var labels = {xticks_labels_meta[valid_tags[0]]};
+            return labels[tick] || "";
+        """)
+        y_formatter = FuncTickFormatter(code=f"""
+            var labels = {yticks_labels_meta[valid_tags[0]]};
+            return labels[tick] || "";
+        """)
+        fig.xaxis.formatter = x_formatter
+        fig.yaxis.formatter = y_formatter
 
-    # Create formatter that shows labels only for every other tick
-    x_formatter = FuncTickFormatter(code=f"""
-        var labels = {x_labels_dict};
-        return labels[tick] || "";
-    """)
-    y_formatter = FuncTickFormatter(code=f"""
-        var labels = {y_labels_dict};
-        return labels[tick] || "";
-    """)
-
-    heatmap_fig.xaxis[0].ticker = x_ticker
-    heatmap_fig.yaxis[0].ticker = y_ticker
-    heatmap_fig.xaxis[0].formatter = x_formatter
-    heatmap_fig.yaxis[0].formatter = y_formatter
-
-    # Use same tickers on scatter so grid aligns across tabs
-    scatter_fig.xaxis[0].ticker = x_ticker
-    scatter_fig.yaxis[0].ticker = y_ticker
-    scatter_fig.xaxis[0].formatter = x_formatter
-    scatter_fig.yaxis[0].formatter = y_formatter
-
-    # Selector
+    # Create selector and callback
     selector = Select(title="Dataset", value=valid_tags[0], options=valid_tags)
 
-    # Payloads for JS
+    # Prepare JavaScript callback payloads
     payload_scatter = {tag: dict(
-        x=scatter_sources[tag].data["x"].tolist(),
-        y=scatter_sources[tag].data["y"].tolist(),
-        density=scatter_sources[tag].data["density"].tolist()
+        x=_to_pylist(scatter_sources[tag].data["x"]),
+        y=_to_pylist(scatter_sources[tag].data["y"]),
+        density=_to_pylist(scatter_sources[tag].data["density"])
     ) for tag in valid_tags}
 
-    # pack quad data
-    def pack_quad(src: ColumnDataSource):
-        d = src.data
-        out = {}
-        for k in ("left", "right", "bottom", "top", "x", "y", "count"):
-            out[k] = [float(v) for v in d[k]]
-        return out
-
-    payload_quads = {tag: pack_quad(quad_sources[tag]) for tag in valid_tags}
-
-    payload_label = {tag: labels_meta[tag] for tag in valid_tags}
-    payload_maxH = {tag: float(np.max(heatmap_meta[tag]["H"])) for tag in valid_tags}
-
-    # ticks payloads - all ticks for grid
-    payload_xticks = {tag: xticks_meta[tag] for tag in valid_tags}
-    payload_yticks = {tag: yticks_meta[tag] for tag in valid_tags}
-
-    # labels payloads - for every other tick
-    payload_xlabels = {tag: xticks_labels_meta[tag] for tag in valid_tags}
-    payload_ylabels = {tag: yticks_labels_meta[tag] for tag in valid_tags}
+    payload_quads = {tag: dict(
+        left=_to_pylist(quad_sources[tag].data["left"]),
+        right=_to_pylist(quad_sources[tag].data["right"]),
+        bottom=_to_pylist(quad_sources[tag].data["bottom"]),
+        top=_to_pylist(quad_sources[tag].data["top"]),
+        x=_to_pylist(quad_sources[tag].data["x"]),
+        y=_to_pylist(quad_sources[tag].data["y"]),
+        count=_to_pylist(quad_sources[tag].data["count"])
+    ) for tag in valid_tags}
 
     callback = CustomJS(args=dict(
         selector=selector,
         scatter_src=scatter_sources[valid_tags[0]],
-        quad_src=quad_src_initial,
+        quad_src=quad_sources[valid_tags[0]],
         color_mapper=color_mapper,
         label_src=label_source,
-        x_ticker=x_ticker,
-        y_ticker=y_ticker,
-        x_formatter=x_formatter,
-        y_formatter=y_formatter,
+        scatter_fig=scatter_fig,
+        heatmap_fig=heatmap_fig,
         scatter_payload=payload_scatter,
         quad_payload=payload_quads,
-        label_payload=payload_label,
-        maxH_payload=payload_maxH,
-        xticks_payload=payload_xticks,
-        yticks_payload=payload_yticks,
-        xlabels_payload=payload_xlabels,
-        ylabels_payload=payload_ylabels,
-        scatter_fig=scatter_fig,  # Add reference to scatter figure
-        heatmap_fig=heatmap_fig,  # Add reference to heatmap figure
+        label_payload=labels_meta,
+        maxH_payload={tag: float(np.max(heatmap_meta[tag]["H"])) for tag in valid_tags},
+        xticks_payload=xticks_meta,
+        yticks_payload=yticks_meta,
+        xlabels_payload=xticks_labels_meta,
+        ylabels_payload=yticks_labels_meta
     ), code="""
     const tag = selector.value;
 
     // Update data sources
-    const sp = scatter_payload[tag];
-    scatter_src.data = {x: sp.x, y: sp.y, density: sp.density};
+    scatter_src.data = scatter_payload[tag];
     scatter_src.change.emit();
 
-    const qp = quad_payload[tag];
-    quad_src.data = qp;
+    quad_src.data = quad_payload[tag];
     quad_src.change.emit();
 
-    const lp = label_payload[tag];
-    label_src.data = lp;
+    label_src.data = label_payload[tag];
     label_src.change.emit();
 
     // Update color scale
-    const mh = maxH_payload[tag];
-    color_mapper.high = (mh > 0) ? mh : 1.0;
+    color_mapper.high = maxH_payload[tag] > 0 ? maxH_payload[tag] : 1.0;
 
-    // Update ticks
-    x_ticker.ticks = xticks_payload[tag];
-    y_ticker.ticks = yticks_payload[tag];
-    x_ticker.change.emit();
-    y_ticker.change.emit();
+    // Sync view ranges
+    const x_start = scatter_fig.x_range.start;
+    const x_end = scatter_fig.x_range.end;
+    const y_start = scatter_fig.y_range.start;
+    const y_end = scatter_fig.y_range.end;
+
+    heatmap_fig.x_range.start = x_start;
+    heatmap_fig.x_range.end = x_end;
+    heatmap_fig.y_range.start = y_start;
+    heatmap_fig.y_range.end = y_end;
+
+    // Update tickers (must be after range updates)
+    scatter_fig.xaxis.ticker.ticks = xticks_payload[tag];
+    scatter_fig.yaxis.ticker.ticks = yticks_payload[tag];
+    heatmap_fig.xaxis.ticker.ticks = xticks_payload[tag];
+    heatmap_fig.yaxis.ticker.ticks = yticks_payload[tag];
 
     // Update formatters
-    const x_labels = xlabels_payload[tag];
-    const y_labels = ylabels_payload[tag];
-    x_formatter.code = 'var labels = ' + JSON.stringify(x_labels) + '; return labels[tick] || "";';
-    y_formatter.code = 'var labels = ' + JSON.stringify(y_labels) + '; return labels[tick] || "";';
-    x_formatter.change.emit();
-    y_formatter.change.emit();
-
-    // Sync view ranges between plots
-    heatmap_fig.x_range.start = scatter_fig.x_range.start;
-    heatmap_fig.x_range.end = scatter_fig.x_range.end;
-    heatmap_fig.y_range.start = scatter_fig.y_range.start;
-    heatmap_fig.y_range.end = scatter_fig.y_range.end;
+    scatter_fig.xaxis.formatter.code = 'var labels=' + JSON.stringify(xlabels_payload[tag]) + ';return labels[tick]||"";';
+    scatter_fig.yaxis.formatter.code = 'var labels=' + JSON.stringify(ylabels_payload[tag]) + ';return labels[tick]||"";';
+    heatmap_fig.xaxis.formatter.code = scatter_fig.xaxis.formatter.code;
+    heatmap_fig.yaxis.formatter.code = scatter_fig.yaxis.formatter.code;
     """)
 
     selector.js_on_change("value", callback)
 
-    # Tabs (selector above)
+    # Create tabs
     scatter_tab = Panel(child=scatter_fig, title="Scatter")
     heatmap_tab = Panel(child=heatmap_fig, title="Heatmap")
     tabs = Tabs(tabs=[scatter_tab, heatmap_tab])
