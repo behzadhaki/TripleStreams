@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Sparse, bin-aligned heatmap + jittered scatter
+Sparse, bin-aligned heatmap + jittered scatter with shared coloring
 
-- Scatter: larger, low-opacity, jittered x&y, NO hover
+- Scatter: larger, low-opacity, jittered x&y, colored by density, WITH hover
 - Heatmap: quads ONLY for count>0; ticks + grid at actual bin centers in use
-- Hover (heatmap only): feat1, feat2, count
+- Hover (both): feat1, feat2, count/density
 - Only the single highest bin is labeled
 - Fixed-bin mode or 0.01 rounding unique-pair mode
 - Caches per dataset+mode in root/cache
@@ -76,11 +76,13 @@ def cache_key(cache_dir: str, dataset_tag: str, feat1: str, feat2: str,
               n_bins_feat1: Optional[int], n_bins_feat2: Optional[int]) -> str:
     safe = lambda s: s.replace(os.sep, "_")
     mode = "round2" if (n_bins_feat1 is None or n_bins_feat2 is None) \
-           else f"bins{int(n_bins_feat1)}x{int(n_bins_feat2)}"
+        else f"bins{int(n_bins_feat1)}x{int(n_bins_feat2)}"
     return os.path.join(cache_dir, f"hist2d__{safe(dataset_tag)}__{safe(feat1)}__{safe(feat2)}__{mode}.npz")
 
 
-def is_cache_valid(cache_path: str, data_path: str) -> bool:
+def is_cache_valid(cache_path: str, data_path: str, force_recalc: bool = False) -> bool:
+    if force_recalc:
+        return False
     if not os.path.exists(cache_path):
         return False
     try:
@@ -94,7 +96,7 @@ def build_round_edges_from_uniques(values: np.ndarray, step: float = 0.01) -> np
     centers = np.unique(np.round(values, 2))
     if centers.size == 0:
         return np.array([0.0, step])
-    start = centers[0] - step/2.0
+    start = centers[0] - step / 2.0
     edges = start + np.arange(centers.size + 1) * step
     return np.round(edges, 6)
 
@@ -106,40 +108,59 @@ def compute_hist2d_custom(
         y_range: Tuple[float, float],
         n_bins_feat1: Optional[int],
         n_bins_feat2: Optional[int]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Returns H (ny, nx), xedges (nx+1), yedges (ny+1).
-    - Fixed bins: histogram2d with provided bins/range
-    - Rounding mode: 0.01 rounding, edges from unique centers only
+    Simple histogram2d computation.
     """
     xmin, xmax = x_range
     ymin, ymax = y_range
 
     if n_bins_feat1 is not None and n_bins_feat2 is not None:
+        # Fixed number of bins
         H, xedges, yedges = np.histogram2d(
             feat1_vals, feat2_vals,
             bins=(n_bins_feat1, n_bins_feat2),
             range=[[xmin, xmax], [ymin, ymax]]
         )
-        return H, xedges, yedges
+    else:
+        # Default to 100 bins if not specified
+        n_bins = 100
+        H, xedges, yedges = np.histogram2d(
+            feat1_vals, feat2_vals,
+            bins=n_bins,
+            range=[[xmin, xmax], [ymin, ymax]]
+        )
 
-    step = 0.01
-    x_round = np.round(feat1_vals, 2)
-    y_round = np.round(feat2_vals, 2)
-
-    xedges = build_round_edges_from_uniques(x_round, step=step)
-    yedges = build_round_edges_from_uniques(y_round, step=step)
-
-    H, _, _ = np.histogram2d(x_round, y_round, bins=(xedges, yedges))
     return H, xedges, yedges
 
 
-def downsample_pairs(x: np.ndarray, y: np.ndarray, max_points: int):
+def compute_point_densities(x: np.ndarray, y: np.ndarray, H: np.ndarray,
+                            xedges: np.ndarray, yedges: np.ndarray) -> np.ndarray:
+    """Compute density value for each point based on which bin it falls into."""
+    densities = np.zeros(len(x))
+
+    for i, (xi, yi) in enumerate(zip(x, y)):
+        # Find which bin this point belongs to
+        x_bin = np.searchsorted(xedges, xi, side='right') - 1
+        y_bin = np.searchsorted(yedges, yi, side='right') - 1
+
+        # Clamp to valid range (0 to n_bins-1)
+        # H.shape is (ny, nx) where ny = len(yedges)-1, nx = len(xedges)-1
+        x_bin = np.clip(x_bin, 0, H.shape[1] - 1)
+        y_bin = np.clip(y_bin, 0, H.shape[0] - 1)
+
+        densities[i] = H[y_bin, x_bin]
+
+    return densities
+
+
+def downsample_pairs_with_density(x: np.ndarray, y: np.ndarray, densities: np.ndarray, max_points: int):
     n = len(x)
     if n <= max_points:
-        return x, y
+        return x, y, densities
     idx = np.random.default_rng(42).choice(n, size=max_points, replace=False)
-    return x[idx], y[idx]
+    return x[idx], y[idx], densities[idx]
 
 
 def max_label_position(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
@@ -147,56 +168,61 @@ def max_label_position(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
     ny, nx = H.shape
     row = idx_flat // nx
     col = idx_flat % nx
-    xcenters = 0.5*(xedges[:-1] + xedges[1:])
-    ycenters = 0.5*(yedges[:-1] + yedges[1:])
+    xcenters = 0.5 * (xedges[:-1] + xedges[1:])
+    ycenters = 0.5 * (yedges[:-1] + yedges[1:])
     return xcenters[col], ycenters[row], str(int(H[row, col]))
 
 
 def make_quad_source_sparse(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
     """
-    Return:
-      - ColumnDataSource for quads (ONLY count>0), with slight epsilon growth to avoid hairline gaps
-      - xcenters_kept, ycenters_kept: tick positions for columns/rows that actually exist
+    Simple quad source creation for heatmap.
+    Returns ColumnDataSource and tick positions.
     """
-    xleft = xedges[:-1]; xright = xedges[1:]
-    ybottom = yedges[:-1]; ytop = yedges[1:]
+    ny, nx = H.shape
 
-    col_sum = H.sum(axis=0)  # nx
-    row_sum = H.sum(axis=1)  # ny
-    keep_cols = np.where(col_sum > 0)[0]
-    keep_rows = np.where(row_sum > 0)[0]
+    # Simple: use all edges as provided
+    xleft = xedges[:-1]
+    xright = xedges[1:]
+    ybottom = yedges[:-1]
+    ytop = yedges[1:]
 
-    # tick positions ONLY where data exists
-    xcenters = 0.5*(xedges[:-1] + xedges[1:])
-    ycenters = 0.5*(yedges[:-1] + yedges[1:])
-    x_ticks = xcenters[keep_cols].tolist()
-    y_ticks = ycenters[keep_rows].tolist()
-
-    # small epsilon to ensure flush visuals (expand a hair)
-    dxs = np.diff(xedges); dys = np.diff(yedges)
-    epsx = float(max(1e-12, 1e-3 * np.min(dxs))) if dxs.size else 0.0
-    epsy = float(max(1e-12, 1e-3 * np.min(dys))) if dys.size else 0.0
-
+    # Find non-empty bins
     xs_left, xs_right, ys_bottom, ys_top = [], [], [], []
     xcenter, ycenter, counts = [], [], []
 
-    for i in keep_rows:
-        for j in keep_cols:
+    for i in range(ny):
+        for j in range(nx):
             c = float(H[i, j])
-            if c <= 0:
-                continue
-            xl = xleft[j] - epsx/2; xr = xright[j] + epsx/2
-            yb = ybottom[i] - epsy/2; yt = ytop[i] + epsy/2
-            xs_left.append(xl); xs_right.append(xr)
-            ys_bottom.append(yb); ys_top.append(yt)
-            xcenter.append(0.5*(xleft[j]+xright[j])); ycenter.append(0.5*(ybottom[i]+ytop[i]))
-            counts.append(c)
+            if c > 0:  # Only add non-zero bins
+                xs_left.append(xleft[j])
+                xs_right.append(xright[j])
+                ys_bottom.append(ybottom[i])
+                ys_top.append(ytop[i])
+                xcenter.append(0.5 * (xleft[j] + xright[j]))
+                ycenter.append(0.5 * (ybottom[i] + ytop[i]))
+                counts.append(c)
+
+    # All bin centers for grid lines
+    xcenters = 0.5 * (xleft + xright)
+    ycenters = 0.5 * (ybottom + ytop)
+
+    # Return all ticks for grid lines
+    x_ticks = xcenters.tolist()
+    y_ticks = ycenters.tolist()
 
     src = ColumnDataSource(dict(
         left=xs_left, right=xs_right, bottom=ys_bottom, top=ys_top,
         x=xcenter, y=ycenter, count=counts
     ))
+
     return src, x_ticks, y_ticks
+
+
+def filter_ticks_every_n(ticks: List[float], n: int = 3) -> List[float]:
+    """Return every nth tick from the list."""
+    if len(ticks) <= 1:
+        return ticks
+    return [ticks[i] for i in range(0, len(ticks), n)]
 
 
 # -----------------
@@ -208,7 +234,8 @@ def build_layout(root: str,
                  feature2: str,
                  n_bins_feat1: Optional[int] = None,
                  n_bins_feat2: Optional[int] = None,
-                 scatter_max_points: int = 100_000):
+                 scatter_max_points: int = 100_000,
+                 force_recalc: bool = False):
     available = discover_available_datasets(root)
     cache_dir = ensure_cache_dir(root)
 
@@ -253,19 +280,25 @@ def build_layout(root: str,
     heatmap_meta: Dict[str, Dict[str, Any]] = {}
     quad_sources: Dict[str, ColumnDataSource] = {}
     labels_meta: Dict[str, Dict[str, Any]] = {}
-    xticks_meta: Dict[str, List[float]] = {}
-    yticks_meta: Dict[str, List[float]] = {}
+    xticks_meta: Dict[str, List[float]] = {}  # All ticks for grid
+    yticks_meta: Dict[str, List[float]] = {}  # All ticks for grid
+    xticks_labels_meta: Dict[str, Dict[str, str]] = {}  # Labels for every other tick
+    yticks_labels_meta: Dict[str, Dict[str, str]] = {}  # Labels for every other tick
 
     print("Preparing heatmap caches...")
+    if force_recalc:
+        print("Force recalculation enabled - ignoring cache")
     for tag in tqdm(valid_tags, desc="Heatmaps"):
         data_path = available[tag]
         cache_path = cache_key(cache_dir, tag, feature1, feature2, n_bins_feat1, n_bins_feat2)
         x = dataset_feature_arrays[tag][feature1]
         y = dataset_feature_arrays[tag][feature2]
 
-        if is_cache_valid(cache_path, data_path):
+        if is_cache_valid(cache_path, data_path, force_recalc):
             cached = np.load(cache_path, allow_pickle=True)
-            H = cached["H"]; xedges = cached["xedges"]; yedges = cached["yedges"]
+            H = cached["H"];
+            xedges = cached["xedges"];
+            yedges = cached["yedges"]
         else:
             H, xedges, yedges = compute_hist2d_custom(x, y, x_range, y_range, n_bins_feat1, n_bins_feat2)
             np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
@@ -274,38 +307,74 @@ def build_layout(root: str,
 
         src, x_ticks, y_ticks = make_quad_source_sparse(H, xedges, yedges)
         quad_sources[tag] = src
-        xticks_meta[tag] = x_ticks
-        yticks_meta[tag] = y_ticks
+        xticks_meta[tag] = x_ticks  # All ticks for grid lines
+        yticks_meta[tag] = y_ticks  # All ticks for grid lines
+
+        # Create labels for every other tick
+        x_labels = {tick: f"{tick:.2f}" if i % 2 == 0 else ""
+                    for i, tick in enumerate(x_ticks)}
+        y_labels = {tick: f"{tick:.2f}" if i % 2 == 0 else ""
+                    for i, tick in enumerate(y_ticks)}
+        xticks_labels_meta[tag] = x_labels
+        yticks_labels_meta[tag] = y_labels
 
         lx, ly, ltext = max_label_position(H, xedges, yedges)
         labels_meta[tag] = {"x": [lx], "y": [ly], "text": [ltext]}
 
-    # Scatter (no hover) with jitter (percent of axis span)
+    # Scatter with density coloring and jitter
     rng = np.random.default_rng(12345)
     jitter_x = (x_range[1] - x_range[0]) * 0.005
     jitter_y = (y_range[1] - y_range[0]) * 0.005
 
     scatter_sources: Dict[str, ColumnDataSource] = {}
-    print("Preparing scatter data...")
+    print("Preparing scatter data with density coloring...")
     for tag in tqdm(valid_tags, desc="Scatter"):
         x = dataset_feature_arrays[tag][feature1]
         y = dataset_feature_arrays[tag][feature2]
-        xs, ys = downsample_pairs(x, y, scatter_max_points)
+
+        # Compute densities for all points
+        H = heatmap_meta[tag]["H"]
+        xedges = heatmap_meta[tag]["xedges"]
+        yedges = heatmap_meta[tag]["yedges"]
+        densities = compute_point_densities(x, y, H, xedges, yedges)
+
+        # Downsample if needed
+        xs, ys, ds = downsample_pairs_with_density(x, y, densities, scatter_max_points)
+
+        # Apply jitter for visualization
         xs_vis = xs + rng.uniform(-jitter_x, jitter_x, size=xs.shape)
         ys_vis = ys + rng.uniform(-jitter_y, jitter_y, size=ys.shape)
-        scatter_sources[tag] = ColumnDataSource(dict(x=xs_vis, y=ys_vis))
+
+        # Store data for scatter (no need for original values since no hover)
+        scatter_sources[tag] = ColumnDataSource(dict(
+            x=xs_vis, y=ys_vis,
+            density=ds
+        ))
 
     # --- Figures ---
-    TOOLS_NO_HOVER = "pan,wheel_zoom,box_zoom,reset,save"
+    TOOLS = "pan,wheel_zoom,box_zoom,reset,save"
 
-    # Scatter
+    # Color mapper (shared between scatter and heatmap)
+    initial_H = heatmap_meta[valid_tags[0]]["H"]
+    color_mapper = LinearColorMapper(
+        palette=Viridis256,
+        low=0,
+        high=float(np.max(initial_H)) if np.max(initial_H) > 0 else 1.0
+    )
+
+    # Scatter with density coloring (no hover)
+    TOOLS_NO_HOVER = "pan,wheel_zoom,box_zoom,reset,save"
     scatter_fig = figure(
         width=750, height=640, x_range=x_range, y_range=y_range,
         tools=TOOLS_NO_HOVER, title=f"Scatter: {feature1} vs {feature2}",
         output_backend="webgl",
     )
-    scatter_fig.circle("x", "y", source=scatter_sources[valid_tags[0]],
-                       size=5, fill_alpha=0.06, line_alpha=0)
+    scatter_renderer = scatter_fig.circle(
+        "x", "y", source=scatter_sources[valid_tags[0]],
+        size=5, fill_alpha=0.3, line_alpha=0,
+        fill_color={'field': 'density', 'transform': color_mapper}
+    )
+
     scatter_fig.xaxis.axis_label = feature1
     scatter_fig.yaxis.axis_label = feature2
     scatter_fig.match_aspect = True
@@ -314,13 +383,10 @@ def build_layout(root: str,
     # Heatmap
     heatmap_fig = figure(
         width=750, height=640, x_range=x_range, y_range=y_range,
-        tools=TOOLS_NO_HOVER, title=f"Heatmap: {feature1} vs {feature2}",
+        tools=TOOLS, title=f"Heatmap: {feature1} vs {feature2}",
         output_backend="webgl",
     )
     heatmap_fig.grid.grid_line_alpha = 0.4
-
-    # Color mapper
-    color_mapper = LinearColorMapper(palette=Viridis256, low=0, high=1)
 
     quad_src_initial = quad_sources[valid_tags[0]]
     quad_renderer = heatmap_fig.quad(
@@ -328,10 +394,10 @@ def build_layout(root: str,
         source=quad_src_initial,
         fill_color={'field': 'count', 'transform': color_mapper},
         fill_alpha=1.0,
-        line_alpha=0.0,
+        line_alpha=0.0,  # No lines between quads for flush appearance
     )
 
-    # Hover (HEATMAP ONLY)
+    # Hover (HEATMAP)
     hover = HoverTool(
         tooltips=[
             ("feat1 =", "@x{0.00}"),
@@ -351,24 +417,43 @@ def build_layout(root: str,
                       background_fill_color="black", background_fill_alpha=0.25)
     heatmap_fig.add_layout(labels)
 
-    color_bar = ColorBar(color_mapper=color_mapper, ticker=BasicTicker(), label_standoff=8, location=(0,0))
+    color_bar = ColorBar(color_mapper=color_mapper, ticker=BasicTicker(), label_standoff=8, location=(0, 0))
     heatmap_fig.add_layout(color_bar, 'right')
+    scatter_fig.add_layout(color_bar, 'right')  # Add color bar to scatter too
+
     heatmap_fig.xaxis.axis_label = feature1
     heatmap_fig.yaxis.axis_label = feature2
     heatmap_fig.match_aspect = True
 
-    # Tickers at actual bin centers for the INITIAL dataset
+    # Tickers - show all grid lines, label every other
     x_ticker = FixedTicker(ticks=xticks_meta[valid_tags[0]])
     y_ticker = FixedTicker(ticks=yticks_meta[valid_tags[0]])
+
+    # Configure tick formatting for initial dataset
+    from bokeh.models import FuncTickFormatter
+    x_labels_dict = xticks_labels_meta[valid_tags[0]]
+    y_labels_dict = yticks_labels_meta[valid_tags[0]]
+
+    # Create formatter that shows labels only for every other tick
+    x_formatter = FuncTickFormatter(code=f"""
+        var labels = {x_labels_dict};
+        return labels[tick] || "";
+    """)
+    y_formatter = FuncTickFormatter(code=f"""
+        var labels = {y_labels_dict};
+        return labels[tick] || "";
+    """)
+
     heatmap_fig.xaxis[0].ticker = x_ticker
     heatmap_fig.yaxis[0].ticker = y_ticker
+    heatmap_fig.xaxis[0].formatter = x_formatter
+    heatmap_fig.yaxis[0].formatter = y_formatter
+
     # Use same tickers on scatter so grid aligns across tabs
     scatter_fig.xaxis[0].ticker = x_ticker
     scatter_fig.yaxis[0].ticker = y_ticker
-
-    # Initialize color high
-    initial_H = heatmap_meta[valid_tags[0]]["H"]
-    color_mapper.high = float(np.max(initial_H)) if np.max(initial_H) > 0 else 1.0
+    scatter_fig.xaxis[0].formatter = x_formatter
+    scatter_fig.yaxis[0].formatter = y_formatter
 
     # Selector
     selector = Select(title="Dataset", value=valid_tags[0], options=valid_tags)
@@ -376,24 +461,30 @@ def build_layout(root: str,
     # Payloads for JS
     payload_scatter = {tag: dict(
         x=scatter_sources[tag].data["x"].tolist(),
-        y=scatter_sources[tag].data["y"].tolist()
+        y=scatter_sources[tag].data["y"].tolist(),
+        density=scatter_sources[tag].data["density"].tolist()
     ) for tag in valid_tags}
 
     # pack quad data
     def pack_quad(src: ColumnDataSource):
         d = src.data
         out = {}
-        for k in ("left","right","bottom","top","x","y","count"):
+        for k in ("left", "right", "bottom", "top", "x", "y", "count"):
             out[k] = [float(v) for v in d[k]]
         return out
+
     payload_quads = {tag: pack_quad(quad_sources[tag]) for tag in valid_tags}
 
     payload_label = {tag: labels_meta[tag] for tag in valid_tags}
-    payload_maxH  = {tag: float(np.max(heatmap_meta[tag]["H"])) for tag in valid_tags}
+    payload_maxH = {tag: float(np.max(heatmap_meta[tag]["H"])) for tag in valid_tags}
 
-    # ticks payloads
+    # ticks payloads - all ticks for grid
     payload_xticks = {tag: xticks_meta[tag] for tag in valid_tags}
     payload_yticks = {tag: yticks_meta[tag] for tag in valid_tags}
+
+    # labels payloads - for every other tick
+    payload_xlabels = {tag: xticks_labels_meta[tag] for tag in valid_tags}
+    payload_ylabels = {tag: yticks_labels_meta[tag] for tag in valid_tags}
 
     callback = CustomJS(args=dict(
         selector=selector,
@@ -403,18 +494,26 @@ def build_layout(root: str,
         label_src=label_source,
         x_ticker=x_ticker,
         y_ticker=y_ticker,
+        x_formatter=x_formatter,
+        y_formatter=y_formatter,
         scatter_payload=payload_scatter,
         quad_payload=payload_quads,
         label_payload=payload_label,
         maxH_payload=payload_maxH,
         xticks_payload=payload_xticks,
         yticks_payload=payload_yticks,
+        xlabels_payload=payload_xlabels,
+        ylabels_payload=payload_ylabels,
     ), code="""
 const tag = selector.value;
 
-// Scatter
+// Scatter with density
 const sp = scatter_payload[tag];
-scatter_src.data = {x: sp.x, y: sp.y};
+scatter_src.data = {
+    x: sp.x, 
+    y: sp.y,
+    density: sp.density
+};
 scatter_src.change.emit();
 
 // Heatmap quads
@@ -431,11 +530,19 @@ label_src.change.emit();
 const mh = maxH_payload[tag];
 color_mapper.high = (mh > 0) ? mh : 1.0;
 
-// Ticks (actual bin centers with data)
+// Ticks (all bin centers for grid lines)
 x_ticker.ticks = xticks_payload[tag];
 y_ticker.ticks = yticks_payload[tag];
 x_ticker.change.emit();
 y_ticker.change.emit();
+
+// Update formatters for labels (every other tick)
+const x_labels = xlabels_payload[tag];
+const y_labels = ylabels_payload[tag];
+x_formatter.code = 'var labels = ' + JSON.stringify(x_labels) + '; return labels[tick] || "";';
+y_formatter.code = 'var labels = ' + JSON.stringify(y_labels) + '; return labels[tick] || "";';
+x_formatter.change.emit();
+y_formatter.change.emit();
 """)
 
     selector.js_on_change("value", callback)
@@ -455,10 +562,12 @@ def build_plots(root: str,
                 n_bins_feat1: Optional[int] = None,
                 n_bins_feat2: Optional[int] = None,
                 scatter_max_points: int = 100_000,
-                output_html_path: str = "triple_stream_plots.html") -> str:
+                output_html_path: str = "triple_stream_plots.html",
+                force_recalc: bool = False) -> str:
     layout = build_layout(root, dataset_tags, feature1, feature2,
                           n_bins_feat1=n_bins_feat1, n_bins_feat2=n_bins_feat2,
-                          scatter_max_points=scatter_max_points)
+                          scatter_max_points=scatter_max_points,
+                          force_recalc=force_recalc)
     output_file(output_html_path, title=f"Feature Plots: {feature1} vs {feature2}")
     save(layout)
     return os.path.abspath(output_html_path)
@@ -479,6 +588,8 @@ def main():
                         help="Bins along feature2 (Y). If omitted/None → 0.01 rounding mode.")
     parser.add_argument("--scatter-max-points", type=int, default=100000, help="Scatter downsample size")
     parser.add_argument("--output", default="triple_stream_plots.html", help="Output HTML filename")
+    parser.add_argument("--force-recalc", action="store_true",
+                        help="Force recalculation of histograms, ignoring cache")
 
     args = parser.parse_args()
 
@@ -490,7 +601,8 @@ def main():
         n_bins_feat1=args.n_bins_feat1,
         n_bins_feat2=args.n_bins_feat2,
         scatter_max_points=args.scatter_max_points,
-        output_html_path=args.output
+        output_html_path=args.output,
+        force_recalc=args.force_recalc
     )
     print(f"Saved to: {path}")
 
