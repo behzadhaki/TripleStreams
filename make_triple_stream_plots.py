@@ -9,6 +9,7 @@ Sparse, bin-aligned heatmap + jittered scatter with shared coloring
 - Fixed-bin mode or 0.01 rounding unique-pair mode
 - Caches per dataset+mode in root/cache
 - tqdm progress; notebook/CLI friendly
+- NEW: Works with string/categorical features on either axis.
 """
 import os
 import bz2
@@ -101,40 +102,72 @@ def is_cache_valid(cache_path: str, data_path: str, force_recalc: bool = False) 
         return False
 
 
-def compute_hist2d_custom(
-        feat1_vals: np.ndarray,
-        feat2_vals: np.ndarray,
-        x_range: Tuple[float, float],
-        y_range: Tuple[float, float],
-        n_bins_feat1: Optional[int],
-        n_bins_feat2: Optional[int]
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    xmin, xmax = x_range
-    ymin, ymax = y_range
+def _is_numeric_array(a: np.ndarray) -> bool:
+    """Return True if array is numeric or can be safely cast to float."""
+    if np.issubdtype(a.dtype, np.number):
+        return True
+    try:
+        _ = np.asarray(a, dtype=float)
+        return True
+    except Exception:
+        return False
 
-    if n_bins_feat1 is not None and n_bins_feat2 is not None:
-        H, xedges, yedges = np.histogram2d(
-            feat1_vals, feat2_vals,
-            bins=(n_bins_feat1, n_bins_feat2),
-            range=[[xmin, xmax], [ymin, ymax]]
-        )
-    else:
-        step = 1 / 32
-        xedges = np.arange(0, xmax + step, step)
-        yedges = np.arange(0, ymax + step, step)
-        if xedges[-1] < xmax:
-            xedges = np.append(xedges, xedges[-1] + step)
-        if yedges[-1] < ymax:
-            yedges = np.append(yedges, yedges[-1] + step)
 
-        H, xedges, yedges = np.histogram2d(
-            feat1_vals, feat2_vals,
-            bins=(xedges, yedges)
-        )
+def build_global_categories(datasets: Dict[str, Dict[str, np.ndarray]],
+                            feature: str) -> Tuple[Dict[str, int], List[str]]:
+    """
+    Create a global category -> index mapping for a feature across all datasets.
+    Returns (cat_to_idx, idx_to_cat).
+    """
+    all_vals: List[str] = []
+    for tag, feats in datasets.items():
+        vals = feats[feature]
+        # flatten any nested object arrays
+        if isinstance(vals, np.ndarray) and vals.dtype == object:
+            flat = []
+            for v in vals.ravel():
+                if isinstance(v, (list, tuple, np.ndarray)):
+                    flat.extend(np.ravel(v).tolist())
+                else:
+                    flat.append(v)
+            vals = np.array(flat, dtype=object)
+        for v in np.ravel(vals):
+            if v is None:
+                continue
+            s = str(v)
+            all_vals.append(s)
+    uniq = sorted(set(all_vals))
+    cat_to_idx = {c: i for i, c in enumerate(uniq)}
+    return cat_to_idx, uniq
 
-    # IMPORTANT: numpy returns H with shape (nx, ny). We want H[y, x].
-    H = H.T
-    return H, xedges, yedges
+
+def encode_categorical(values: np.ndarray, cat_to_idx: Dict[str, int]) -> np.ndarray:
+    """Map values to integer indices via cat_to_idx; drop unknowns."""
+    vals = values
+    if isinstance(vals, np.ndarray) and vals.dtype == object:
+        flat = []
+        for v in vals.ravel():
+            if isinstance(v, (list, tuple, np.ndarray)):
+                flat.extend(np.ravel(v).tolist())
+            else:
+                flat.append(v)
+        vals = np.array(flat, dtype=object)
+    as_str = np.array(list(map(str, np.ravel(vals))))
+    idx = np.array([cat_to_idx.get(v, -1) for v in as_str], dtype=int)
+    return idx[idx >= 0]
+
+
+def compute_hist2d_general(x: np.ndarray, y: np.ndarray,
+                           xedges: np.ndarray, yedges: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Histogram with explicit edges; returns H[y,x] and the edges."""
+    H, xe, ye = np.histogram2d(x, y, bins=(xedges, yedges))
+    return H.T, xe, ye
+
+
+def make_tick_label_maps_for_categories(idx_to_cat: List[str]) -> Tuple[List[float], Dict[float, str]]:
+    centers = [i + 0.5 for i in range(len(idx_to_cat))]
+    labels = {float(c): idx_to_cat[i] for i, c in enumerate(centers)}
+    return centers, labels
 
 
 def compute_point_densities(x: np.ndarray, y: np.ndarray, H: np.ndarray,
@@ -143,15 +176,10 @@ def compute_point_densities(x: np.ndarray, y: np.ndarray, H: np.ndarray,
     densities = np.zeros(len(x))
 
     for i, (xi, yi) in enumerate(zip(x, y)):
-        # Find which bin this point belongs to
         x_bin = np.searchsorted(xedges, xi, side='right') - 1
         y_bin = np.searchsorted(yedges, yi, side='right') - 1
-
-        # Clamp to valid range (0 to n_bins-1)
-        # H.shape is (ny, nx) where ny = len(yedges)-1, nx = len(xedges)-1
         x_bin = np.clip(x_bin, 0, H.shape[1] - 1)
         y_bin = np.clip(y_bin, 0, H.shape[0] - 1)
-
         densities[i] = H[y_bin, x_bin]
 
     return densities
@@ -175,40 +203,49 @@ def max_label_position(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
     return xcenters[col], ycenters[row], str(int(H[row, col]))
 
 
-def make_quad_source_sparse(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray):
+def make_quad_source_sparse(H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray,
+                            center_to_xlabel: Optional[Dict[float, str]] = None,
+                            center_to_ylabel: Optional[Dict[float, str]] = None):
     ny, nx = H.shape
 
-    # Use all edges as provided
     xleft = xedges[:-1]
     xright = xedges[1:]
     ybottom = yedges[:-1]
     ytop = yedges[1:]
 
-    # Find non-empty bins
     xs_left, xs_right, ys_bottom, ys_top = [], [], [], []
     xcenter, ycenter, counts = [], [], []
+    xlabels, ylabels = [], []
 
     for i in range(ny):
         for j in range(nx):
             c = float(H[i, j])
-            if c > 0:  # Only add non-zero bins
-                xs_left.append(xleft[j])
-                xs_right.append(xright[j])
-                ys_bottom.append(ybottom[i])
-                ys_top.append(ytop[i])
-                xcenter.append(0.5 * (xleft[j] + xright[j]))
-                ycenter.append(0.5 * (ybottom[i] + ytop[i]))
-                counts.append(c)
-
-    # Calculate tick positions at bin centers
-    x_ticks = [0.5 * (xedges[i] + xedges[i+1]) for i in range(len(xedges)-1)]
-    y_ticks = [0.5 * (yedges[i] + yedges[i+1]) for i in range(len(yedges)-1)]
+            if c > 0:
+                xl, xr = xleft[j], xright[j]
+                yb, yt = ybottom[i], ytop[i]
+                xc = 0.5 * (xl + xr)
+                yc = 0.5 * (yb + yt)
+                xs_left.append(xl); xs_right.append(xr)
+                ys_bottom.append(yb); ys_top.append(yt)
+                xcenter.append(xc); ycenter.append(yc); counts.append(c)
+                if center_to_xlabel:
+                    xlabels.append(center_to_xlabel.get(xc, f"{xc:.2f}"))
+                else:
+                    xlabels.append(f"{xc:.2f}")
+                if center_to_ylabel:
+                    ylabels.append(center_to_ylabel.get(yc, f"{yc:.2f}"))
+                else:
+                    ylabels.append(f"{yc:.2f}")
 
     src = ColumnDataSource(dict(
         left=xs_left, right=xs_right, bottom=ys_bottom, top=ys_top,
-        x=xcenter, y=ycenter, count=counts
+        x=xcenter, y=ycenter, count=counts,
+        x_label=xlabels, y_label=ylabels
     ))
 
+    # tick centers for axes
+    x_ticks = [0.5 * (xedges[i] + xedges[i+1]) for i in range(len(xedges)-1)]
+    y_ticks = [0.5 * (yedges[i] + yedges[i+1]) for i in range(len(yedges)-1)]
     return src, x_ticks, y_ticks
 
 
@@ -240,7 +277,7 @@ def build_layout(root: str,
     if not valid_tags:
         raise RuntimeError("None of the provided dataset_tags exist under the root path.")
 
-    # Load datasets
+    # Load datasets (raw)
     dataset_feature_arrays = {}
     print("Loading datasets...")
     for tag in tqdm(valid_tags, desc="Datasets"):
@@ -250,31 +287,97 @@ def build_layout(root: str,
         if feature1 not in d_dict or feature2 not in d_dict:
             raise KeyError(f"Features '{feature1}' and/or '{feature2}' not found in dataset '{tag}'.")
 
-        x = np.asarray(d_dict[feature1], dtype=float)
-        y = np.asarray(d_dict[feature2], dtype=float)
-        x = np.concatenate([np.ravel(v) for v in x]) if x.dtype == object else np.ravel(x)
-        y = np.concatenate([np.ravel(v) for v in y]) if y.dtype == object else np.ravel(y)
-        mask = np.isfinite(x) & np.isfinite(y)
-        x, y = x[mask], y[mask]
+        x = np.asarray(d_dict[feature1], dtype=object)
+        y = np.asarray(d_dict[feature2], dtype=object)
         dataset_feature_arrays[tag] = {feature1: x, feature2: y}
 
-    # Global ranges (force [0,1] when no bins specified)
-    if n_bins_feat1 is None or n_bins_feat2 is None:
-        x_range = (0.0, 1.0)
-        y_range = (0.0, 1.0)
+    # Detect numeric vs categorical
+    feat1_is_numeric = True
+    feat2_is_numeric = True
+    for tag in valid_tags:
+        feat1_is_numeric &= _is_numeric_array(np.asarray(dataset_feature_arrays[tag][feature1]))
+        feat2_is_numeric &= _is_numeric_array(np.asarray(dataset_feature_arrays[tag][feature2]))
+
+    # Build global category maps if needed
+    catmap1 = catmap2 = None
+    idx2cat1 = idx2cat2 = None
+
+    if not feat1_is_numeric:
+        tmp = {tag: {feature1: dataset_feature_arrays[tag][feature1]} for tag in valid_tags}
+        catmap1, idx2cat1 = build_global_categories(tmp, feature1)
+
+    if not feat2_is_numeric:
+        tmp = {tag: {feature2: dataset_feature_arrays[tag][feature2]} for tag in valid_tags}
+        catmap2, idx2cat2 = build_global_categories(tmp, feature2)
+
+    # Normalize arrays (numeric keep floats; categorical → indices + 0.5 for centers)
+    for tag in valid_tags:
+        x_raw = dataset_feature_arrays[tag][feature1]
+        y_raw = dataset_feature_arrays[tag][feature2]
+
+        if feat1_is_numeric:
+            x = np.asarray(x_raw, dtype=float)
+            x = np.concatenate([np.ravel(v) for v in x]) if x.dtype == object else np.ravel(x)
+        else:
+            x = encode_categorical(np.asarray(x_raw, dtype=object), catmap1).astype(float) + 0.5
+
+        if feat2_is_numeric:
+            y = np.asarray(y_raw, dtype=float)
+            y = np.concatenate([np.ravel(v) for v in y]) if y.dtype == object else np.ravel(y)
+        else:
+            y = encode_categorical(np.asarray(y_raw, dtype=object), catmap2).astype(float) + 0.5
+
+        mask = np.isfinite(x) & np.isfinite(y)
+        dataset_feature_arrays[tag] = {feature1: x[mask], feature2: y[mask]}
+
+    # Global ranges
+    if not feat1_is_numeric:
+        nx_cats = len(idx2cat1)
+        x_range = (0.0, float(nx_cats))
     else:
-        all_x = np.concatenate([dataset_feature_arrays[tag][feature1] for tag in valid_tags])
-        all_y = np.concatenate([dataset_feature_arrays[tag][feature2] for tag in valid_tags])
-        x_min, x_max = np.percentile(all_x, [1, 99])
-        y_min, y_max = np.percentile(all_y, [1, 99])
-        pad_x = 0.02 * (x_max - x_min) if x_max > x_min else 1.0
-        pad_y = 0.02 * (y_max - y_min) if y_max > y_min else 1.0
-        x_range = (float(x_min - pad_x), float(x_max + pad_x))
-        y_range = (float(y_min - pad_y), float(y_max + pad_y))
+        if n_bins_feat1 is None or n_bins_feat2 is None:
+            x_range = (0.0, 1.0)
+        else:
+            all_x = np.concatenate([dataset_feature_arrays[tag][feature1] for tag in valid_tags])
+            x_min, x_max = np.percentile(all_x, [1, 99])
+            pad_x = 0.02 * (x_max - x_min) if x_max > x_min else 1.0
+            x_range = (float(x_min - pad_x), float(x_max + pad_x))
+
+    if not feat2_is_numeric:
+        ny_cats = len(idx2cat2)
+        y_range = (0.0, float(ny_cats))
+    else:
+        if n_bins_feat1 is None or n_bins_feat2 is None:
+            y_range = (0.0, 1.0)
+        else:
+            all_y = np.concatenate([dataset_feature_arrays[tag][feature2] for tag in valid_tags])
+            y_min, y_max = np.percentile(all_y, [1, 99])
+            pad_y = 0.02 * (y_max - y_min) if y_max > y_min else 1.0
+            y_range = (float(y_min - pad_y), float(y_max + pad_y))
 
     # Create shared range objects
     x_range_obj = Range1d(x_range[0], x_range[1])
     y_range_obj = Range1d(y_range[0], y_range[1])
+
+    # Prepare edges builders
+    def build_numeric_edges(vmin: float, vmax: float, n_bins: Optional[int]):
+        if n_bins is not None:
+            return np.linspace(vmin, vmax, int(n_bins) + 1)
+        step = 1 / 32.0
+        edges = np.arange(vmin, vmax + step, step)
+        if edges[-1] < vmax:
+            edges = np.append(edges, edges[-1] + step)
+        return edges
+
+    def build_xedges():
+        if not feat1_is_numeric:
+            return np.arange(0.0, x_range[1] + 1.0, 1.0)
+        return build_numeric_edges(x_range[0], x_range[1], n_bins_feat1)
+
+    def build_yedges():
+        if not feat2_is_numeric:
+            return np.arange(0.0, y_range[1] + 1.0, 1.0)
+        return build_numeric_edges(y_range[0], y_range[1], n_bins_feat2)
 
     # Build heatmaps
     heatmap_meta = {}
@@ -292,26 +395,57 @@ def build_layout(root: str,
         x = dataset_feature_arrays[tag][feature1]
         y = dataset_feature_arrays[tag][feature2]
 
+        # Build edges per current settings
+        xedges = build_xedges()
+        yedges = build_yedges()
+
+        # Use cache if valid and edges likely match; otherwise recompute
         if is_cache_valid(cache_path, data_path, force_recalc):
-            cached = np.load(cache_path, allow_pickle=True)
-            H = cached["H"]
-            xedges = cached["xedges"]
-            yedges = cached["yedges"]
+            try:
+                cached = np.load(cache_path, allow_pickle=True)
+                H = cached["H"]
+                xe = cached["xedges"]
+                ye = cached["yedges"]
+                # if edges differ in length/values, recompute
+                if len(xe) != len(xedges) or len(ye) != len(yedges) or not np.allclose(xe, xedges) or not np.allclose(ye, yedges):
+                    H, xe, ye = compute_hist2d_general(x, y, xedges, yedges)
+                    np.savez_compressed(cache_path, H=H, xedges=xe, yedges=ye)
+                else:
+                    xedges, yedges = xe, ye
+            except Exception:
+                H, xedges, yedges = compute_hist2d_general(x, y, xedges, yedges)
+                np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
         else:
-            H, xedges, yedges = compute_hist2d_custom(x, y, x_range, y_range, n_bins_feat1, n_bins_feat2)
+            H, xedges, yedges = compute_hist2d_general(x, y, xedges, yedges)
             np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
 
         heatmap_meta[tag] = {"H": H.astype(float), "xedges": xedges, "yedges": yedges}
-        src, x_ticks, y_ticks = make_quad_source_sparse(H, xedges, yedges)
+
+        # Label maps if categorical
+        center_to_xlabel = None
+        center_to_ylabel = None
+        if not feat1_is_numeric:
+            _, x_label_map = make_tick_label_maps_for_categories(idx2cat1)
+            center_to_xlabel = x_label_map
+        if not feat2_is_numeric:
+            _, y_label_map = make_tick_label_maps_for_categories(idx2cat2)
+            center_to_ylabel = y_label_map
+
+        src, x_ticks, y_ticks = make_quad_source_sparse(H, xedges, yedges, center_to_xlabel, center_to_ylabel)
         quad_sources[tag] = src
         xticks_meta[tag] = x_ticks
         yticks_meta[tag] = y_ticks
 
-        # Create labels for every 4th tick
-        x_labels = {tick: f"{tick:.2f}" if i % 4 == 0 else ""
-                    for i, tick in enumerate(x_ticks)}
-        y_labels = {tick: f"{tick:.2f}" if i % 4 == 0 else ""
-                    for i, tick in enumerate(y_ticks)}
+        # Tick labels
+        if not feat1_is_numeric:
+            x_labels = {tick: center_to_xlabel.get(tick, "") for tick in x_ticks}
+        else:
+            x_labels = {tick: f"{tick:.2f}" if i % 4 == 0 else "" for i, tick in enumerate(x_ticks)}
+        if not feat2_is_numeric:
+            y_labels = {tick: center_to_ylabel.get(tick, "") for tick in y_ticks}
+        else:
+            y_labels = {tick: f"{tick:.2f}" if i % 4 == 0 else "" for i, tick in enumerate(y_ticks)}
+
         xticks_labels_meta[tag] = x_labels
         yticks_labels_meta[tag] = y_labels
 
@@ -320,8 +454,11 @@ def build_layout(root: str,
 
     # Scatter with density coloring
     rng = np.random.default_rng(12345)
-    jitter_x = (x_range[1] - x_range[0]) * 0.005
-    jitter_y = (y_range[1] - y_range[0]) * 0.005
+    # Smaller jitter for categorical axes to keep points near centers
+    span_x = (x_range[1] - x_range[0])
+    span_y = (y_range[1] - y_range[0])
+    jitter_x = (0.005 * span_x) if feat1_is_numeric else 0.1
+    jitter_y = (0.005 * span_y) if feat2_is_numeric else 0.1
 
     scatter_sources = {}
     print("Preparing scatter data...")
@@ -335,8 +472,23 @@ def build_layout(root: str,
         xs, ys, ds = downsample_pairs_with_density(x, y, densities, scatter_max_points)
         xs_vis = xs + rng.uniform(-jitter_x, jitter_x, size=xs.shape)
         ys_vis = ys + rng.uniform(-jitter_y, jitter_y, size=ys.shape)
+
+        # Labels for hover
+        if not feat1_is_numeric:
+            # map nearest category center to label
+            idx = np.clip((np.floor(xs + 0.5)).astype(int), 0, len(idx2cat1)-1)
+            xs_lab = [idx2cat1[i] for i in idx]
+        else:
+            xs_lab = [f"{val:.2f}" for val in xs]
+
+        if not feat2_is_numeric:
+            idx = np.clip((np.floor(ys + 0.5)).astype(int), 0, len(idx2cat2)-1)
+            ys_lab = [idx2cat2[i] for i in idx]
+        else:
+            ys_lab = [f"{val:.2f}" for val in ys]
+
         scatter_sources[tag] = ColumnDataSource(dict(
-            x=xs_vis, y=ys_vis, density=ds
+            x=xs_vis, y=ys_vis, density=ds, x_label=xs_lab, y_label=ys_lab
         ))
 
     # Create figures with shared ranges
@@ -352,7 +504,7 @@ def build_layout(root: str,
     scatter_fig = figure(
         width=750, height=640,
         x_range=x_range_obj, y_range=y_range_obj,
-        tools="pan,wheel_zoom,box_zoom,reset,save",
+        tools=TOOLS,
         title=f"Scatter: {feature1} vs {feature2}",
         output_backend="webgl"
     )
@@ -361,6 +513,15 @@ def build_layout(root: str,
         size=5, fill_alpha=0.3, line_alpha=0,
         fill_color={'field': 'density', 'transform': color_mapper}
     )
+    scatter_hover = HoverTool(
+        tooltips=[
+            (f"{feature1}", "@x_label"),
+            (f"{feature2}", "@y_label"),
+            ("Density", "@density{0,0}")
+        ],
+        renderers=[scatter_renderer]
+    )
+    scatter_fig.add_tools(scatter_hover)
 
     # Heatmap plot
     heatmap_fig = figure(
@@ -376,12 +537,10 @@ def build_layout(root: str,
         fill_color={'field': 'count', 'transform': color_mapper},
         fill_alpha=1.0, line_alpha=0.0
     )
-
-    # Add hover tools
     heatmap_hover = HoverTool(
         tooltips=[
-            (f"{feature1}", "@x{0.00}"),
-            (f"{feature2}", "@y{0.00}"),
+            (f"{feature1}", "@x_label"),
+            (f"{feature2}", "@y_label"),
             ("Count", "@count{0,0}")
         ],
         renderers=[quad_renderer]
@@ -399,14 +558,20 @@ def build_layout(root: str,
     heatmap_fig.add_layout(labels)
 
     # Add color bars
-    color_bar = ColorBar(
+    color_bar_hm = ColorBar(
         color_mapper=color_mapper,
         ticker=BasicTicker(),
         label_standoff=8,
         location=(0, 0)
     )
-    heatmap_fig.add_layout(color_bar, 'right')
-    scatter_fig.add_layout(color_bar, 'right')
+    color_bar_sc = ColorBar(
+        color_mapper=color_mapper,
+        ticker=BasicTicker(),
+        label_standoff=8,
+        location=(0, 0)
+    )
+    heatmap_fig.add_layout(color_bar_hm, 'right')
+    scatter_fig.add_layout(color_bar_sc, 'right')
 
     # Configure axes
     for fig in [scatter_fig, heatmap_fig]:
@@ -433,11 +598,13 @@ def build_layout(root: str,
     # Create selector and callback
     selector = Select(title="Dataset", value=valid_tags[0], options=valid_tags)
 
-    # Prepare JavaScript callback payloads
+    # Prepare JavaScript payloads
     payload_scatter = {tag: dict(
         x=_to_pylist(scatter_sources[tag].data["x"]),
         y=_to_pylist(scatter_sources[tag].data["y"]),
-        density=_to_pylist(scatter_sources[tag].data["density"])
+        density=_to_pylist(scatter_sources[tag].data["density"]),
+        x_label=_to_pylist(scatter_sources[tag].data.get("x_label", [""]*len(scatter_sources[tag].data["x"]))),
+        y_label=_to_pylist(scatter_sources[tag].data.get("y_label", [""]*len(scatter_sources[tag].data["y"])))
     ) for tag in valid_tags}
 
     payload_quads = {tag: dict(
@@ -447,7 +614,9 @@ def build_layout(root: str,
         top=_to_pylist(quad_sources[tag].data["top"]),
         x=_to_pylist(quad_sources[tag].data["x"]),
         y=_to_pylist(quad_sources[tag].data["y"]),
-        count=_to_pylist(quad_sources[tag].data["count"])
+        count=_to_pylist(quad_sources[tag].data["count"]),
+        x_label=_to_pylist(quad_sources[tag].data.get("x_label", [""]*len(quad_sources[tag].data["x"]))),
+        y_label=_to_pylist(quad_sources[tag].data.get("y_label", [""]*len(quad_sources[tag].data["y"])))
     ) for tag in valid_tags}
 
     callback = CustomJS(args=dict(
@@ -500,8 +669,8 @@ def build_layout(root: str,
     heatmap_fig.yaxis.ticker.ticks = yticks_payload[tag];
 
     // Update formatters
-    scatter_fig.xaxis.formatter.code = 'var labels=' + JSON.stringify(xlabels_payload[tag]) + ';return labels[tick]||"";';
-    scatter_fig.yaxis.formatter.code = 'var labels=' + JSON.stringify(ylabels_payload[tag]) + ';return labels[tick]||"";';
+    scatter_fig.xaxis.formatter.code = 'var labels=' + JSON.stringify(xlabels_payload[tag]) + ';return labels[tick]||\"\";';
+    scatter_fig.yaxis.formatter.code = 'var labels=' + JSON.stringify(ylabels_payload[tag]) + ';return labels[tick]||\"\";';
     heatmap_fig.xaxis.formatter.code = scatter_fig.xaxis.formatter.code;
     heatmap_fig.yaxis.formatter.code = scatter_fig.yaxis.formatter.code;
     """)
@@ -538,15 +707,15 @@ def build_plots(root: str,
 # CLI
 # -----------------
 def main():
-    parser = argparse.ArgumentParser(description="Build cached, tabbed Bokeh plots (Scatter & Heatmap).")
+    parser = argparse.ArgumentParser(description="Build cached, tabbed Bokeh plots (Scatter & Heatmap) with string/categorical support.")
     parser.add_argument("--root", required=True, help="Root folder containing .pkl.bz2 files")
     parser.add_argument("--tags", nargs="+", required=True, help="Dataset tags (filenames without .pkl.bz2)")
     parser.add_argument("--feature1", required=True, help="Feature name for X axis")
     parser.add_argument("--feature2", required=True, help="Feature name for Y axis")
     parser.add_argument("--n-bins-feat1", type=int, default=None,
-                        help="Bins along feature1 (X). If omitted/None → 0.01 rounding mode.")
+                        help="Bins along feature1 (X). If omitted/None → 0.01 rounding mode (numeric).")
     parser.add_argument("--n-bins-feat2", type=int, default=None,
-                        help="Bins along feature2 (Y). If omitted/None → 0.01 rounding mode.")
+                        help="Bins along feature2 (Y). If omitted/None → 0.01 rounding mode (numeric).")
     parser.add_argument("--scatter-max-points", type=int, default=100000, help="Scatter downsample size")
     parser.add_argument("--output", default="triple_stream_plots.html", help="Output HTML filename")
     parser.add_argument("--force-recalc", action="store_true",
