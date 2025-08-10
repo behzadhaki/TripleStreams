@@ -23,7 +23,7 @@ from bokeh.io import output_file, save
 from bokeh.models import (
     ColumnDataSource, Select, CustomJS,
     LinearColorMapper, ColorBar, BasicTicker, FixedTicker,
-    Tabs, Panel, LabelSet, HoverTool
+    Tabs, Panel, LabelSet, HoverTool, Range1d
 )
 from bokeh.plotting import figure
 from bokeh.layouts import column
@@ -99,48 +99,32 @@ def compute_hist2d_custom(
         n_bins_feat1: Optional[int],
         n_bins_feat2: Optional[int]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Returns H (ny, nx), xedges (nx+1), yedges (ny+1).
-    Uses the vectorized unique + counting approach when no bins are specified.
-    """
     xmin, xmax = x_range
     ymin, ymax = y_range
 
     if n_bins_feat1 is not None and n_bins_feat2 is not None:
-        # Fixed number of bins
+        # Fixed number of bins - standard behavior
         H, xedges, yedges = np.histogram2d(
             feat1_vals, feat2_vals,
             bins=(n_bins_feat1, n_bins_feat2),
             range=[[xmin, xmax], [ymin, ymax]]
         )
     else:
-        # Use the vectorized unique + counting approach
-        # Create bins with 1/32 resolution (0.03125)
+        # Custom binning with perfect alignment
         step = 1 / 32
-        x_bins = np.arange(0, 1 + step, step)
-        y_bins = np.arange(0, 1 + step, step)
+        # Calculate number of bins needed to cover the range
+        x_bins = int(np.ceil((xmax - xmin) / step)) + 1
+        y_bins = int(np.ceil((ymax - ymin) / step)) + 1
 
-        # Digitize the values
-        x_idx = np.digitize(feat1_vals, x_bins) - 1
-        y_idx = np.digitize(feat2_vals, y_bins) - 1
+        # Create edges starting exactly at xmin/ymin
+        xedges = np.linspace(xmin, xmin + x_bins * step, x_bins + 1)
+        yedges = np.linspace(ymin, ymin + y_bins * step, y_bins + 1)
 
-        # Filter out values outside the bins
-        mask = (x_idx >= 0) & (x_idx < len(x_bins) - 1) & (y_idx >= 0) & (y_idx < len(y_bins) - 1)
-        x_idx = x_idx[mask]
-        y_idx = y_idx[mask]
-
-        # Count occurrences
-        H = np.zeros((len(y_bins) - 1, len(x_bins) - 1), dtype=np.int32)
-        flat_idx = np.ravel_multi_index((y_idx, x_idx), dims=H.shape)
-        counts = np.bincount(flat_idx, minlength=H.size)
-        H = counts.reshape(H.shape)
-
-        xedges = x_bins
-        yedges = y_bins
-
-    # Ensure the histogram and edges match
-    assert H.shape == (len(yedges) - 1, len(xedges) - 1), \
-        f"Shape mismatch: H.shape={H.shape}, yedges={len(yedges) - 1}, xedges={len(xedges) - 1}"
+        # Compute histogram using these exact edges
+        H, xedges, yedges = np.histogram2d(
+            feat1_vals, feat2_vals,
+            bins=(xedges, yedges)
+        )
 
     return H, xedges, yedges
 
@@ -387,11 +371,29 @@ def build_layout(root: str,
 
     # Scatter with density coloring (no hover)
     TOOLS_NO_HOVER = "pan,wheel_zoom,box_zoom,reset,save"
+
+    # Create shared range objects
+    x_range = Range1d(x_range[0], x_range[1])
+    y_range = Range1d(y_range[0], y_range[1])
+
+    # Scatter figure using shared ranges
     scatter_fig = figure(
-        width=750, height=640, x_range=x_range, y_range=y_range,
-        tools=TOOLS_NO_HOVER, title=f"Scatter: {feature1} vs {feature2}",
+        width=750, height=640,
+        x_range=x_range, y_range=y_range,  # Shared ranges
+        tools=TOOLS_NO_HOVER,
+        title=f"Scatter: {feature1} vs {feature2}",
         output_backend="webgl",
     )
+
+    # Heatmap figure using the SAME shared ranges
+    heatmap_fig = figure(
+        width=750, height=640,
+        x_range=x_range, y_range=y_range,  # Same ranges
+        tools=TOOLS,
+        title=f"Heatmap: {feature1} vs {feature2}",
+        output_backend="webgl",
+    )
+
     scatter_renderer = scatter_fig.circle(
         "x", "y", source=scatter_sources[valid_tags[0]],
         size=5, fill_alpha=0.3, line_alpha=0,
@@ -403,12 +405,6 @@ def build_layout(root: str,
     scatter_fig.match_aspect = True
     scatter_fig.grid.grid_line_alpha = 0.4
 
-    # Heatmap
-    heatmap_fig = figure(
-        width=750, height=640, x_range=x_range, y_range=y_range,
-        tools=TOOLS, title=f"Heatmap: {feature1} vs {feature2}",
-        output_backend="webgl",
-    )
     heatmap_fig.grid.grid_line_alpha = 0.4
 
     quad_src_initial = quad_sources[valid_tags[0]]
@@ -527,46 +523,48 @@ def build_layout(root: str,
         yticks_payload=payload_yticks,
         xlabels_payload=payload_xlabels,
         ylabels_payload=payload_ylabels,
+        scatter_fig=scatter_fig,  # Add reference to scatter figure
+        heatmap_fig=heatmap_fig,  # Add reference to heatmap figure
     ), code="""
-const tag = selector.value;
+    const tag = selector.value;
 
-// Scatter with density
-const sp = scatter_payload[tag];
-scatter_src.data = {
-    x: sp.x, 
-    y: sp.y,
-    density: sp.density
-};
-scatter_src.change.emit();
+    // Update data sources
+    const sp = scatter_payload[tag];
+    scatter_src.data = {x: sp.x, y: sp.y, density: sp.density};
+    scatter_src.change.emit();
 
-// Heatmap quads
-const qp = quad_payload[tag];
-quad_src.data = qp;
-quad_src.change.emit();
+    const qp = quad_payload[tag];
+    quad_src.data = qp;
+    quad_src.change.emit();
 
-// Label
-const lp = label_payload[tag];
-label_src.data = lp;
-label_src.change.emit();
+    const lp = label_payload[tag];
+    label_src.data = lp;
+    label_src.change.emit();
 
-// Color scale
-const mh = maxH_payload[tag];
-color_mapper.high = (mh > 0) ? mh : 1.0;
+    // Update color scale
+    const mh = maxH_payload[tag];
+    color_mapper.high = (mh > 0) ? mh : 1.0;
 
-// Ticks (all bin centers for grid lines)
-x_ticker.ticks = xticks_payload[tag];
-y_ticker.ticks = yticks_payload[tag];
-x_ticker.change.emit();
-y_ticker.change.emit();
+    // Update ticks
+    x_ticker.ticks = xticks_payload[tag];
+    y_ticker.ticks = yticks_payload[tag];
+    x_ticker.change.emit();
+    y_ticker.change.emit();
 
-// Update formatters for labels (every other tick)
-const x_labels = xlabels_payload[tag];
-const y_labels = ylabels_payload[tag];
-x_formatter.code = 'var labels = ' + JSON.stringify(x_labels) + '; return labels[tick] || "";';
-y_formatter.code = 'var labels = ' + JSON.stringify(y_labels) + '; return labels[tick] || "";';
-x_formatter.change.emit();
-y_formatter.change.emit();
-""")
+    // Update formatters
+    const x_labels = xlabels_payload[tag];
+    const y_labels = ylabels_payload[tag];
+    x_formatter.code = 'var labels = ' + JSON.stringify(x_labels) + '; return labels[tick] || "";';
+    y_formatter.code = 'var labels = ' + JSON.stringify(y_labels) + '; return labels[tick] || "";';
+    x_formatter.change.emit();
+    y_formatter.change.emit();
+
+    // Sync view ranges between plots
+    heatmap_fig.x_range.start = scatter_fig.x_range.start;
+    heatmap_fig.x_range.end = scatter_fig.x_range.end;
+    heatmap_fig.y_range.start = scatter_fig.y_range.start;
+    heatmap_fig.y_range.end = scatter_fig.y_range.end;
+    """)
 
     selector.js_on_change("value", callback)
 
