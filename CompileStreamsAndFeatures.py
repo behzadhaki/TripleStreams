@@ -77,7 +77,7 @@ def compile_data_for_multiple_datasets_pkl(data_dir, dataset_pkls, *, pickle_pro
         If you have object-dtype arrays and need them preserved, set True.
         (Be aware of the usual security caveats when loading pickled/allow-pickled content.)
     """
-    compiled_data_dir = os.path.join(data_dir, "../compiled_data")
+    compiled_data_dir = os.path.join(data_dir, "compiled_data")
     os.makedirs(compiled_data_dir, exist_ok=True)
     dataset_dict = {}
 
@@ -238,6 +238,7 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
                     "qpm": [],              # added √
                     "Flat Out Vs. Input | Hits | Hamming": [],     # output flattened to input hamming distance         # added √
                     "Flat Out Vs. Input | Accent | Hamming": [],       # added √
+                    "Flat Out Vs. Input | Accent | Hamming Normalized": [],  # added √
                     "Flat Out Vs. Input | Accent | Jaccard": [],  # added √
                     "Stream 1 Vs. Flat Out | Hits | Jaccard Jaccard": [],  # Stream 1 of Output's jaccard distance to flattened input       # added √
                     "Stream 2 Vs. Flat Out | Hits | Jaccard Jaccard": [],  # Stream 2 of Output's jaccard distance to flattened input       # added √
@@ -255,9 +256,15 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
             # get groove and outputs
             input_hvo, streams, flat_out_hvo = get_split_to_streams(hvo_sample, groove_dim=groove_dim)
 
+
+
+
+            v1 = input_hvo[:, 1]
+            v2 = flat_out_hvo[:, 1]
+
             i_fo_hamming = np.round(hamming_distance(input_hvo[:, 0], flat_out_hvo[:, 0]), 6)
-            accents_i = get_accent_hits_from_velocities(input_hvo[:, 1], accent_thresh=accent_v_thresh)
-            accents_fo = get_accent_hits_from_velocities(flat_out_hvo[:, 1], accent_thresh=accent_v_thresh)
+            accents_i = get_accent_hits_from_velocities(v1, accent_thresh=accent_v_thresh)
+            accents_fo = get_accent_hits_from_velocities(v2, accent_thresh=accent_v_thresh)
 
             i_fo_accent_hamming = np.round(hamming_distance(
                 accents_i, accents_fo
@@ -267,8 +274,15 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
                 accents_i, accents_fo
             )
 
-            v1 = input_hvo[:, 1]
-            v2 = flat_out_hvo[:, 1]
+            # normalized velocity comparisons
+            def get_timesteps_where_either_is_1(a, b):
+                """
+                Get indices where either a or b is 1.
+                """
+                return np.where((a == 1) | (b == 1))[0]
+            h1 = input_hvo[:, 0]
+            h2 = flat_out_hvo[:, 0]
+            valid_indices = get_timesteps_where_either_is_1(h1, h2)
             vel_correlations_dict = compare_sequences_masked(v1, v2, positive_thresh=0.0)
 
             for streams_permuation in list_permutations(streams):
@@ -281,6 +295,7 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
                 datasets[dataset_tag]["output_hvos"].append(mix_streams_into_hvo(streams_permuation))
                 datasets[dataset_tag]["Flat Out Vs. Input | Hits | Hamming"].append(i_fo_hamming)
                 datasets[dataset_tag]["Flat Out Vs. Input | Accent | Hamming"].append(i_fo_accent_hamming)
+                datasets[dataset_tag]["Flat Out Vs. Input | Accent | Hamming Normalized"].append(i_fo_accent_hamming * 32.0 / valid_indices.shape[0])     # max hamming is the number of steps where either has a hit. Dividing by 32 in the line above compresses the possible values
                 datasets[dataset_tag]["Flat Out Vs. Input | Accent | Jaccard"].append(i_fo_accent_jaccard)
                 datasets[dataset_tag]["Stream 1 Vs. Flat Out | Hits | Jaccard Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[0][:, 0]), 6))
                 datasets[dataset_tag]["Stream 2 Vs. Flat Out | Hits | Jaccard Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[1][:, 0]), 6))
@@ -298,7 +313,7 @@ def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls, accent_v_thr
     Compile data for multiple datasets.
     """
     # create a directory to save the compiled data
-    compiled_data_dir = os.path.join(data_dir, "../compiled_data")
+    compiled_data_dir = os.path.join(data_dir, "compiled_data")
     os.makedirs(compiled_data_dir, exist_ok=True)
     dataset_dict = {}
 
@@ -313,10 +328,10 @@ def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls, accent_v_thr
 
     # save the dataset
     for key, value in dataset_dict.items():
-        final_dict_fname = f"{key}_Accent_thresh.pkl.bz2"
+        final_dict_fname = f"{key}.pkl.bz2"
         print("Final dictionary filename will be:", final_dict_fname)
-        os.makedirs(os.path.join(compiled_data_dir, f"accentThresh{accent_v_thresh}"), exist_ok=True)
-        compiled_data_path = os.path.join(os.path.join(compiled_data_dir, f"accentThresh{accent_v_thresh}"), final_dict_fname)
+        os.makedirs(f"data/triple_streams/cached/CompiledUsingAccentThreshOf{accent_v_thresh}", exist_ok=True)
+        compiled_data_path = f"data/triple_streams/cached/CompiledUsingAccentThreshOf{accent_v_thresh}/{final_dict_fname}"
         with bz2.BZ2File(compiled_data_path, 'wb') as f:
             pickle.dump(value, f)
 
@@ -337,7 +352,7 @@ if __name__ == "__main__":
 
     # NON LMD DATASETS
     data_dir = "data/triple_streams/split_2bars/rest"
-    dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])[::-1]
+    dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])
 
     for dataset_pkl_fname in dataset_pkls:
         if dataset_pkl_fname.endswith(".pkl.bz2"):
@@ -353,3 +368,6 @@ if __name__ == "__main__":
     dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])
     compile_data_for_multiple_datasets_pkl(data_dir, dataset_pkls, accent_v_thresh=accent_v_thresh)
     print("\n\n\n √√√√√√√√√ Finished compiling dataset: LMD Top Four Dataset")
+    
+    
+    
