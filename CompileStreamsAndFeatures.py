@@ -236,11 +236,12 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
                     "collection": [],       # added √
                     "metadata": [],     # added √
                     "qpm": [],              # added √
-                    "OF_Input Hamming": [],     # output flattened to input hamming distance         # added √
-                    "OF_Input Hamming Accent": [],       # added √
-                    "OS1_OF Jaccard": [],  # Stream 1 of Output's jaccard distance to flattened input       # added √
-                    "OS2_OF Jaccard": [],  # Stream 2 of Output's jaccard distance to flattened input       # added √
-                    "OS3_OF Jaccard": [],  # Stream 3 of Output's jaccard distance to flattened input       # added √
+                    "Flat Out Vs. Input | Hits | Hamming": [],     # output flattened to input hamming distance         # added √
+                    "Flat Out Vs. Input | Accent | Hamming": [],       # added √
+                    "Flat Out Vs. Input | Accent | Jaccard": [],  # added √
+                    "Stream 1 Vs. Flat Out | Hits | Jaccard Jaccard": [],  # Stream 1 of Output's jaccard distance to flattened input       # added √
+                    "Stream 2 Vs. Flat Out | Hits | Jaccard Jaccard": [],  # Stream 2 of Output's jaccard distance to flattened input       # added √
+                    "Stream 3 Vs. Flat Out | Hits | Jaccard Jaccard": [],  # Stream 3 of Output's jaccard distance to flattened input       # added √
                     "pearson": [],         # added √
                     "cosine": [],          # added √
                     "euclidean_similarity": [],  # added √
@@ -255,10 +256,16 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
             input_hvo, streams, flat_out_hvo = get_split_to_streams(hvo_sample, groove_dim=groove_dim)
 
             i_fo_hamming = np.round(hamming_distance(input_hvo[:, 0], flat_out_hvo[:, 0]), 6)
+            accents_i = get_accent_hits_from_velocities(input_hvo[:, 1], accent_thresh=accent_v_thresh)
+            accents_fo = get_accent_hits_from_velocities(flat_out_hvo[:, 1], accent_thresh=accent_v_thresh)
+
             i_fo_accent_hamming = np.round(hamming_distance(
-                get_accent_hits_from_velocities(input_hvo[:, 1], accent_thresh=accent_v_thresh),
-                get_accent_hits_from_velocities(flat_out_hvo[:, 1], accent_thresh=accent_v_thresh),
+                accents_i, accents_fo
             ), 6)
+
+            i_fo_accent_jaccard = Jaccard_similarity(
+                accents_i, accents_fo
+            )
 
             v1 = input_hvo[:, 1]
             v2 = flat_out_hvo[:, 1]
@@ -272,11 +279,12 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
                 datasets[dataset_tag]["input_hvos"].append(input_hvo)
                 datasets[dataset_tag]["flat_out_hvos"].append(flat_out_hvo)
                 datasets[dataset_tag]["output_hvos"].append(mix_streams_into_hvo(streams_permuation))
-                datasets[dataset_tag]["OF_Input Hamming"].append(i_fo_hamming)
-                datasets[dataset_tag]["OF_Input Hamming Accent"].append(i_fo_accent_hamming)
-                datasets[dataset_tag]["OS1_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[0][:, 0]), 6))
-                datasets[dataset_tag]["OS2_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[1][:, 0]), 6))
-                datasets[dataset_tag]["OS3_OF Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[2][:, 0]), 6))
+                datasets[dataset_tag]["Flat Out Vs. Input | Hits | Hamming"].append(i_fo_hamming)
+                datasets[dataset_tag]["Flat Out Vs. Input | Accent | Hamming"].append(i_fo_accent_hamming)
+                datasets[dataset_tag]["Flat Out Vs. Input | Accent | Jaccard"].append(i_fo_accent_jaccard)
+                datasets[dataset_tag]["Stream 1 Vs. Flat Out | Hits | Jaccard Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[0][:, 0]), 6))
+                datasets[dataset_tag]["Stream 2 Vs. Flat Out | Hits | Jaccard Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[1][:, 0]), 6))
+                datasets[dataset_tag]["Stream 3 Vs. Flat Out | Hits | Jaccard Jaccard"].append(np.round(Jaccard_similarity(flat_out_hvo[:, 0], streams_permuation[2][:, 0]), 6))
                 datasets[dataset_tag]["pearson"].append(vel_correlations_dict["pearson"])
                 datasets[dataset_tag]["cosine"].append(vel_correlations_dict["cosine"])
                 datasets[dataset_tag]["euclidean_similarity"].append(vel_correlations_dict["euclidean_similarity"])
