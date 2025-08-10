@@ -64,12 +64,12 @@ class InputGrooveLayerWithTwoControls(torch.nn.Module):
 
     def __init__(self, embedding_size, d_model, max_len,
                  velocity_dropout, offset_dropout,
-                 positional_encoding_dropout, n_input_control1_tokens, n_input_control2_tokens):
+                 positional_encoding_dropout, n_encoding_control1_tokens, n_encoding_control2_tokens):
         super(InputGrooveLayerWithTwoControls, self).__init__()
-        self.n_input_control1_tokens = n_input_control1_tokens
-        self.input_control1_embedding = torch.nn.Embedding(num_embeddings=self.n_input_control1_tokens, embedding_dim=max_len * d_model)
-        self.n_input_control2_tokens = n_input_control2_tokens
-        self.input_control2_embedding = torch.nn.Embedding(num_embeddings=self.n_input_control2_tokens, embedding_dim=max_len * d_model)
+        self.n_encoding_control1_tokens = n_encoding_control1_tokens
+        self.encoding_control1_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control1_tokens, embedding_dim=max_len * d_model)
+        self.n_encoding_control2_tokens = n_encoding_control2_tokens
+        self.encoding_control2_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control2_tokens, embedding_dim=max_len * d_model)
     
         self.velocity_dropout = torch.nn.Dropout(p=velocity_dropout)
         self.offset_dropout = torch.nn.Dropout(p=offset_dropout)
@@ -82,8 +82,8 @@ class InputGrooveLayerWithTwoControls(torch.nn.Module):
         self.PositionalEncoding = PositionalEncoding(d_model, (max_len), positional_encoding_dropout)
 
     def init_weights(self, initrange=0.1):
-        self.input_control1_embedding.weight.data.uniform_(-initrange, initrange)
-        self.input_control2_embedding.weight.data.uniform_(-initrange, initrange)
+        self.encoding_control1_embedding.weight.data.uniform_(-initrange, initrange)
+        self.encoding_control2_embedding.weight.data.uniform_(-initrange, initrange)
         self.HitsLinear.weight.data.uniform_(-initrange, initrange)
         self.HitsLinear.bias.data.zero_()
         self.VelocitiesLinear.bias.data.zero_()
@@ -91,17 +91,17 @@ class InputGrooveLayerWithTwoControls(torch.nn.Module):
         self.OffsetsLinear.bias.data.zero_()
         self.OffsetsLinear.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, hvo, input_control1_token, input_control2_token):
+    def forward(self, hvo, encoding_control1_token, encoding_control2_token):
         '''
 
         :param hvo: shape (batch, 32, 3)
         :return:
         '''
-        if len(input_control1_token.shape) == 1:
-            input_control1_token = input_control1_token.unsqueeze(-1)
+        if len(encoding_control1_token.shape) == 1:
+            encoding_control1_token = encoding_control1_token.unsqueeze(-1)
 
-        if len(input_control2_token.shape) == 1:
-            input_control2_token = input_control2_token.unsqueeze(-1)
+        if len(encoding_control2_token.shape) == 1:
+            encoding_control2_token = encoding_control2_token.unsqueeze(-1)
 
         hit = hvo[:, :, 0:1]
         vel = hvo[:, :, 1:2]
@@ -110,9 +110,9 @@ class InputGrooveLayerWithTwoControls(torch.nn.Module):
         hits_projection = self.HitsReLU(self.HitsLinear(hit))
         velocities_projection = self.VelocitiesReLU(self.VelocitiesLinear(self.velocity_dropout(vel)))
         offsets_projection = self.OffsetsReLU(self.OffsetsLinear(self.offset_dropout(offset)))
-        control1_embedding = self.input_control1_embedding(input_control1_token)
+        control1_embedding = self.encoding_control1_embedding(encoding_control1_token)
         control1_embedding = control1_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
-        control2_embedding = self.input_control2_embedding(input_control2_token)
+        control2_embedding = self.encoding_control2_embedding(encoding_control2_token)
         control2_embedding = control2_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
         hvo_projection = hits_projection + velocities_projection + offsets_projection + control1_embedding + control2_embedding
         out = self.PositionalEncoding(hvo_projection)
@@ -235,15 +235,15 @@ class DecoderInput(torch.nn.Module):
     """
 
     def __init__(self, max_len, latent_dim, d_model,
-                 n_stream1_control_tokens, n_stream2_control_tokens, n_stream3_control_tokens):
+                 n_decoding_control1_tokens, n_decoding_control2_tokens, n_decoding_control3_tokens):
 
         super(DecoderInput, self).__init__()
         self.max_len = max_len
         self.d_model = d_model
 
-        self.control1_embedding = torch.nn.Embedding(num_embeddings=n_stream1_control_tokens, embedding_dim=latent_dim)
-        self.control2_embedding = torch.nn.Embedding(num_embeddings=n_stream2_control_tokens, embedding_dim=latent_dim)
-        self.control3_embedding = torch.nn.Embedding(num_embeddings=n_stream3_control_tokens, embedding_dim=latent_dim)
+        self.control1_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control1_tokens, embedding_dim=latent_dim)
+        self.control2_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control2_tokens, embedding_dim=latent_dim)
+        self.control3_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control3_tokens, embedding_dim=latent_dim)
 
         self.fc = torch.nn.Linear(int(latent_dim), int(max_len * d_model))
         self.reLU = torch.nn.ReLU()
@@ -258,32 +258,32 @@ class DecoderInput(torch.nn.Module):
     @torch.jit.export
     def forward(self,
                 latent_z: torch.Tensor,
-                stream1_control_token: torch.Tensor,
-                stream2_control_token: torch.Tensor,
-                stream3_control_token: torch.Tensor):
+                decoding_control1_token: torch.Tensor,
+                decoding_control2_token: torch.Tensor,
+                decoding_control3_token: torch.Tensor):
         """
         applies the activation functions and reshapes the input tensor to fix dimensions with decoder
 
         :param latent_z: shape (batch, latent_dim)
-        :param stream1_control_token:  shape (batch) or (batch, 1)
-        :param stream2_control_token:  shape (batch) or (batch, 1)
-        :param stream3_control_token:  shape (batch) or (batch, 1)
+        :param decoding_control1_token:  shape (batch) or (batch, 1)
+        :param decoding_control2_token:  shape (batch) or (batch, 1)
+        :param decoding_control3_token:  shape (batch) or (batch, 1)
 
         :return:
                 projected (latent+outputstream controls projected) into the shape (batch, max_len, d_model_dec)
         """
 
 
-        if len(stream1_control_token.shape) == 2:
-            stream1_control_token = stream1_control_token.squeeze(-1)
-        if len(stream2_control_token.shape) == 2:
-            stream2_control_token = stream2_control_token.squeeze(-1)
-        if len(stream3_control_token.shape) == 2:
-            stream3_control_token = stream3_control_token.squeeze(-1)
+        if len(decoding_control1_token.shape) == 2:
+            decoding_control1_token = decoding_control1_token.squeeze(-1)
+        if len(decoding_control2_token.shape) == 2:
+            decoding_control2_token = decoding_control2_token.squeeze(-1)
+        if len(decoding_control3_token.shape) == 2:
+            decoding_control3_token = decoding_control3_token.squeeze(-1)
 
         latent_z = (latent_z +
-                    self.control1_embedding(stream1_control_token) +
-                    self.control2_embedding(stream2_control_token) +
-                    self.control3_embedding(stream3_control_token))
+                    self.control1_embedding(decoding_control1_token) +
+                    self.control2_embedding(decoding_control2_token) +
+                    self.control3_embedding(decoding_control3_token))
 
         return self.reLU(self.fc.forward(latent_z)).view(-1, self.max_len, self.d_model)

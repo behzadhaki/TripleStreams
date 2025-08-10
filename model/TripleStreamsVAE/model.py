@@ -39,11 +39,11 @@ class TripleStreamsVAE(torch.nn.Module):
 
         self.config = config
         self.latent_dim = config['latent_dim']
-        self.n_input_control1_tokens = config['n_input_control1_tokens']
-        self.n_input_control2_tokens = config['n_input_control2_tokens']
-        self.n_stream1_control_tokens = config['n_stream1_control_tokens']
-        self.n_stream2_control_tokens = config['n_stream2_control_tokens']
-        self.n_stream3_control_tokens = config['n_stream3_control_tokens']
+        self.n_encoding_control1_tokens = config['n_encoding_control1_tokens']
+        self.n_encoding_control2_tokens = config['n_encoding_control2_tokens']
+        self.n_decoding_control1_tokens = config['n_decoding_control1_tokens']
+        self.n_decoding_control2_tokens = config['n_decoding_control2_tokens']
+        self.n_decoding_control3_tokens = config['n_decoding_control3_tokens']
 
         # Layers for the Groove2Drum VAE
         # ---------------------------------------------------
@@ -54,8 +54,8 @@ class TripleStreamsVAE(torch.nn.Module):
             velocity_dropout=float(self.config['velocity_dropout']),
             offset_dropout=float(self.config['offset_dropout']),
             positional_encoding_dropout=float(self.config['dropout']),
-            n_input_control1_tokens=self.config['n_input_control1_tokens'],
-            n_input_control2_tokens=self.config['n_input_control2_tokens'],
+            n_encoding_control1_tokens=self.config['n_encoding_control1_tokens'],
+            n_encoding_control2_tokens=self.config['n_encoding_control2_tokens'],
         )
 
         self.Encoder = Encoder(
@@ -76,9 +76,9 @@ class TripleStreamsVAE(torch.nn.Module):
             max_len=self.config['max_len_dec'],
             latent_dim=self.config['latent_dim'],
             d_model=self.config['d_model_dec'],
-            n_stream1_control_tokens=self.config['n_stream1_control_tokens'],
-            n_stream2_control_tokens=self.config['n_stream2_control_tokens'],
-            n_stream3_control_tokens=self.config['n_stream3_control_tokens'],
+            n_decoding_control1_tokens=self.config['n_decoding_control1_tokens'],
+            n_decoding_control2_tokens=self.config['n_decoding_control2_tokens'],
+            n_decoding_control3_tokens=self.config['n_decoding_control3_tokens'],
         )
 
         self.HitsDecoder = Encoder(
@@ -98,9 +98,9 @@ class TripleStreamsVAE(torch.nn.Module):
             max_len=self.config['max_len_dec'],
             latent_dim=self.config['latent_dim'],
             d_model=self.config['d_model_dec'],
-            n_stream1_control_tokens=self.config['n_stream1_control_tokens'],
-            n_stream2_control_tokens=self.config['n_stream2_control_tokens'],
-            n_stream3_control_tokens=self.config['n_stream3_control_tokens']
+            n_decoding_control1_tokens=self.config['n_decoding_control1_tokens'],
+            n_decoding_control2_tokens=self.config['n_decoding_control2_tokens'],
+            n_decoding_control3_tokens=self.config['n_decoding_control3_tokens']
         )
         
         self.VelocityDecoder = Encoder(
@@ -120,9 +120,9 @@ class TripleStreamsVAE(torch.nn.Module):
             max_len=self.config['max_len_dec'],
             latent_dim=self.config['latent_dim'],
             d_model=self.config['d_model_dec'],
-            n_stream1_control_tokens=self.config['n_stream1_control_tokens'],
-            n_stream2_control_tokens=self.config['n_stream2_control_tokens'],
-            n_stream3_control_tokens=self.config['n_stream3_control_tokens']
+            n_decoding_control1_tokens=self.config['n_decoding_control1_tokens'],
+            n_decoding_control2_tokens=self.config['n_decoding_control2_tokens'],
+            n_decoding_control3_tokens=self.config['n_decoding_control3_tokens']
         )
         
         self.OffsetDecoder = Encoder(
@@ -159,14 +159,14 @@ class TripleStreamsVAE(torch.nn.Module):
 
     @torch.jit.export
     def encodeLatent(self, flat_hvo_groove: torch.Tensor,
-                     input_control1_token: torch.Tensor,
-                     input_control2_token: torch.Tensor):
+                     encoding_control1_token: torch.Tensor,
+                     encoding_control2_token: torch.Tensor):
         """
         Encodes the input sequence through the encoder and predicts the latent space
 
         :param flat_hvo_groove: [N, 32, 3]
-        :param input_control1_token: [N, 1]
-        :param input_control2_token: [N, 1]
+        :param encoding_control1_token: [N, 1]
+        :param encoding_control2_token: [N, 1]
 
         :return: mu, log_var, latent_z, memory
                 mu:            [N, latent_dim]
@@ -176,37 +176,37 @@ class TripleStreamsVAE(torch.nn.Module):
 
         """
         x, hit, hvo_projection = self.InputLayerEncoder.forward(hvo=flat_hvo_groove,
-                                                                input_control1_token=input_control1_token,
-                                                                input_control2_token=input_control2_token)
+                                                                encoding_control1_token=encoding_control1_token,
+                                                                encoding_control2_token=encoding_control2_token)
         memory = self.Encoder(x)  # N x (32+1) x d_model_enc
         mu, log_var, latent_z = self.latentLayer(memory)
         return mu, log_var, latent_z, memory
 
     @torch.jit.export
     def encode_all(self, flat_hvo_groove: torch.Tensor,
-                   input_control1_token: torch.Tensor,
-                   input_control2_token: torch.Tensor):
+                   encoding_control1_token: torch.Tensor,
+                   encoding_control2_token: torch.Tensor):
         """
         just here to make the model compatible with the previous CompGenVAE (in VST)
         """
         return self.encodeLatent(flat_hvo_groove=flat_hvo_groove,
-                                 input_control1_token=input_control1_token,
-                                 input_control2_token=input_control2_token)
+                                 encoding_control1_token=encoding_control1_token,
+                                 encoding_control2_token=encoding_control2_token)
 
     @torch.jit.export
     def decode(self, latent_z: torch.Tensor,
-               stream1_control_token: torch.Tensor,
-               stream2_control_token: torch.Tensor,
-               stream3_control_token: torch.Tensor):
+               decoding_control1_token: torch.Tensor,
+               decoding_control2_token: torch.Tensor,
+               decoding_control3_token: torch.Tensor):
         """
         Decodes the latent_z (N x latent_dim)  (through the decoder
 
         This one expects that genre are activated (softmaxed / sigmoided)
 
         :param latent_z:            [N, latent_dim]
-        :param stream1_control_token:       [N, 1]
-        :param stream2_control_token:       [N, 1]
-        :param stream3_control_token:       [N, 1]
+        :param decoding_control1_token:       [N, 1]
+        :param decoding_control2_token:       [N, 1]
+        :param decoding_control3_token:       [N, 1]
 
         :return:                    h_logits, v_logits, o_logits, hvo_logits
 
@@ -222,9 +222,9 @@ class TripleStreamsVAE(torch.nn.Module):
             self.HitsDecoder(
                 self.HitsDecoderInput(
                     latent_z=latent_z,
-                    stream1_control_token=stream1_control_token,
-                    stream2_control_token=stream2_control_token,
-                    stream3_control_token=stream3_control_token
+                    decoding_control1_token=decoding_control1_token,
+                    decoding_control2_token=decoding_control2_token,
+                    decoding_control3_token=decoding_control3_token
                 )
             )
         )
@@ -233,9 +233,9 @@ class TripleStreamsVAE(torch.nn.Module):
             self.VelocityDecoder(
                 self.velocityDecoderInput(
                     latent_z=latent_z,
-                    stream1_control_token=stream1_control_token,
-                    stream2_control_token=stream2_control_token,
-                    stream3_control_token=stream3_control_token
+                    decoding_control1_token=decoding_control1_token,
+                    decoding_control2_token=decoding_control2_token,
+                    decoding_control3_token=decoding_control3_token
                 )
             )
         )
@@ -244,9 +244,9 @@ class TripleStreamsVAE(torch.nn.Module):
             self.OffsetDecoder(
                 self.OffsetDecoderInput(
                     latent_z=latent_z,
-                    stream1_control_token=stream1_control_token,
-                    stream2_control_token=stream2_control_token,
-                    stream3_control_token=stream3_control_token
+                    decoding_control1_token=decoding_control1_token,
+                    decoding_control2_token=decoding_control2_token,
+                    decoding_control3_token=decoding_control3_token
                 )
             )
         )
@@ -258,18 +258,18 @@ class TripleStreamsVAE(torch.nn.Module):
     @torch.jit.export
     def sample(self,
                latent_z: torch.Tensor,
-               stream1_control_token: torch.Tensor,
-               stream2_control_token: torch.Tensor,
-               stream3_control_token: torch.Tensor,
+               decoding_control1_token: torch.Tensor,
+               decoding_control2_token: torch.Tensor,
+               decoding_control3_token: torch.Tensor,
                voice_thresholds: torch.Tensor,
                voice_max_count_allowed: torch.Tensor,
                sampling_mode: int = 0):
 
         h_logits, v_logits, o_logits, hvo_logits = self.decode(
             latent_z=latent_z,
-            stream1_control_token=stream1_control_token,
-            stream2_control_token=stream2_control_token,
-            stream3_control_token=stream3_control_token
+            decoding_control1_token=decoding_control1_token,
+            decoding_control2_token=decoding_control2_token,
+            decoding_control3_token=decoding_control3_token
         )
 
         _h = torch.sigmoid(h_logits)
@@ -299,21 +299,21 @@ class TripleStreamsVAE(torch.nn.Module):
 
     @torch.jit.export
     def forward(self, flat_hvo_groove: torch.Tensor,
-                input_control1_token: torch.Tensor,
-                input_control2_token: torch.Tensor,
-                stream1_control_token: torch.Tensor,
-                stream2_control_token: torch.Tensor,
-                stream3_control_token: torch.Tensor):
+                encoding_control1_token: torch.Tensor,
+                encoding_control2_token: torch.Tensor,
+                decoding_control1_token: torch.Tensor,
+                decoding_control2_token: torch.Tensor,
+                decoding_control3_token: torch.Tensor):
 
         mu, log_var, latent_z, memory = self.encodeLatent(flat_hvo_groove=flat_hvo_groove,
-                                                          input_control1_token=input_control1_token,
-                                                          input_control2_token=input_control2_token)
+                                                          encoding_control1_token=encoding_control1_token,
+                                                          encoding_control2_token=encoding_control2_token)
 
         h_logits, v_logits, o_logits, hvo_logits = self.decode(
             latent_z=latent_z,
-            stream1_control_token=stream1_control_token,
-            stream2_control_token=stream2_control_token,
-            stream3_control_token=stream3_control_token
+            decoding_control1_token=decoding_control1_token,
+            decoding_control2_token=decoding_control2_token,
+            decoding_control3_token=decoding_control3_token
         )
 
         return h_logits, v_logits, o_logits, mu, log_var, latent_z
@@ -321,20 +321,20 @@ class TripleStreamsVAE(torch.nn.Module):
     @torch.jit.export
     def predict(self,
                 flat_hvo_groove: torch.Tensor,
-                input_control1_token: torch.Tensor,
-                input_control2_token: torch.Tensor,
-                stream1_control_token: torch.Tensor,
-                stream2_control_token: torch.Tensor,
-                stream3_control_token: torch.Tensor,
+                encoding_control1_token: torch.Tensor,
+                encoding_control2_token: torch.Tensor,
+                decoding_control1_token: torch.Tensor,
+                decoding_control2_token: torch.Tensor,
+                decoding_control3_token: torch.Tensor,
                 threshold: float=0.5):
 
         h_logits, v_logits, o_logits, mu, log_var, latent_z = self.forward(
             flat_hvo_groove=flat_hvo_groove,
-            input_control1_token=input_control1_token,
-            input_control2_token=input_control2_token,
-            stream1_control_token=stream1_control_token,
-            stream2_control_token=stream2_control_token,
-            stream3_control_token=stream3_control_token
+            encoding_control1_token=encoding_control1_token,
+            encoding_control2_token=encoding_control2_token,
+            decoding_control1_token=decoding_control1_token,
+            decoding_control2_token=decoding_control2_token,
+            decoding_control3_token=decoding_control3_token
         )
 
         _h = torch.sigmoid(h_logits)
@@ -415,37 +415,37 @@ if __name__ == "__main__":
         'max_len_dec': 32,
         'velocity_dropout': 0.1,
         'offset_dropout': 0.2,
-        'n_input_control1_tokens': 20,
-        'n_input_control2_tokens': 10,
-        'n_stream1_control_tokens': 20,
-        'n_stream2_control_tokens': 10,
-        'n_stream3_control_tokens': 10,
+        'n_encoding_control1_tokens': 20,
+        'n_encoding_control2_tokens': 10,
+        'n_decoding_control1_tokens': 20,
+        'n_decoding_control2_tokens': 10,
+        'n_decoding_control3_tokens': 10,
         'n_density_bins': 3,
         'n_tempo_bins': 7,
         'device': 'cpu'
     }
 
     model = TripleStreamsVAE(config)
-    input_control1_token = torch.tensor([[1]])
-    input_control2_token = torch.tensor([[2]])
-    stream1_control_token = torch.tensor([[1]])
-    stream2_control_token = torch.tensor([[2]])
-    stream3_control_token = torch.tensor([[3]])
+    encoding_control1_token = torch.tensor([[1]])
+    encoding_control2_token = torch.tensor([[2]])
+    decoding_control1_token = torch.tensor([[1]])
+    decoding_control2_token = torch.tensor([[2]])
+    decoding_control3_token = torch.tensor([[3]])
 
     model.forward(
         flat_hvo_groove=torch.rand(1, 32, config["embedding_size_src"]),
-        input_control1_token=input_control1_token,
-        input_control2_token=input_control2_token,
-        stream1_control_token=stream1_control_token,
-        stream2_control_token=stream2_control_token,
-        stream3_control_token=stream3_control_token
+        encoding_control1_token=encoding_control1_token,
+        encoding_control2_token=encoding_control2_token,
+        decoding_control1_token=decoding_control1_token,
+        decoding_control2_token=decoding_control2_token,
+        decoding_control3_token=decoding_control3_token
     )
 
     model.decode(
         latent_z=torch.rand(1, config["latent_dim"]),
-        stream1_control_token=stream1_control_token,
-        stream2_control_token=stream2_control_token,
-        stream3_control_token=stream3_control_token
+        decoding_control1_token=decoding_control1_token,
+        decoding_control2_token=decoding_control2_token,
+        decoding_control3_token=decoding_control3_token
     )
 
     model.serialize(save_folder='./')
