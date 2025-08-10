@@ -91,16 +91,6 @@ def is_cache_valid(cache_path: str, data_path: str, force_recalc: bool = False) 
         return False
 
 
-def build_round_edges_from_uniques(values: np.ndarray, step: float = 0.01) -> np.ndarray:
-    """Edges from ONLY unique 0.01-rounded centers in the data (no empty rows/cols)."""
-    centers = np.unique(np.round(values, 2))
-    if centers.size == 0:
-        return np.array([0.0, step])
-    start = centers[0] - step / 2.0
-    edges = start + np.arange(centers.size + 1) * step
-    return np.round(edges, 6)
-
-
 def compute_hist2d_custom(
         feat1_vals: np.ndarray,
         feat2_vals: np.ndarray,
@@ -111,7 +101,7 @@ def compute_hist2d_custom(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Returns H (ny, nx), xedges (nx+1), yedges (ny+1).
-    Simple histogram2d computation.
+    Uses the vectorized unique + counting approach when no bins are specified.
     """
     xmin, xmax = x_range
     ymin, ymax = y_range
@@ -124,13 +114,33 @@ def compute_hist2d_custom(
             range=[[xmin, xmax], [ymin, ymax]]
         )
     else:
-        # Default to 100 bins if not specified
-        n_bins = 100
-        H, xedges, yedges = np.histogram2d(
-            feat1_vals, feat2_vals,
-            bins=n_bins,
-            range=[[xmin, xmax], [ymin, ymax]]
-        )
+        # Use the vectorized unique + counting approach
+        # Create bins with 1/32 resolution (0.03125)
+        step = 1 / 32
+        x_bins = np.arange(0, 1 + step, step)
+        y_bins = np.arange(0, 1 + step, step)
+
+        # Digitize the values
+        x_idx = np.digitize(feat1_vals, x_bins) - 1
+        y_idx = np.digitize(feat2_vals, y_bins) - 1
+
+        # Filter out values outside the bins
+        mask = (x_idx >= 0) & (x_idx < len(x_bins) - 1) & (y_idx >= 0) & (y_idx < len(y_bins) - 1)
+        x_idx = x_idx[mask]
+        y_idx = y_idx[mask]
+
+        # Count occurrences
+        H = np.zeros((len(y_bins) - 1, len(x_bins) - 1), dtype=np.int32)
+        flat_idx = np.ravel_multi_index((y_idx, x_idx), dims=H.shape)
+        counts = np.bincount(flat_idx, minlength=H.size)
+        H = counts.reshape(H.shape)
+
+        xedges = x_bins
+        yedges = y_bins
+
+    # Ensure the histogram and edges match
+    assert H.shape == (len(yedges) - 1, len(xedges) - 1), \
+        f"Shape mismatch: H.shape={H.shape}, yedges={len(yedges) - 1}, xedges={len(xedges) - 1}"
 
     return H, xedges, yedges
 
@@ -268,13 +278,18 @@ def build_layout(root: str,
     all_x = np.concatenate([dataset_feature_arrays[tag][feature1] for tag in valid_tags])
     all_y = np.concatenate([dataset_feature_arrays[tag][feature2] for tag in valid_tags])
 
-    x_min, x_max = np.percentile(all_x, [1, 99])
-    y_min, y_max = np.percentile(all_y, [1, 99])
+    # If no bins specified, use default range [0,1]
+    if n_bins_feat1 is None and n_bins_feat2 is None:
+        x_range = (0.0, 1.0)
+        y_range = (0.0, 1.0)
+    else:
+        x_min, x_max = np.percentile(all_x, [1, 99])
+        y_min, y_max = np.percentile(all_y, [1, 99])
 
-    pad_x = 0.02 * (x_max - x_min) if x_max > x_min else 1.0
-    pad_y = 0.02 * (y_max - y_min) if y_max > y_min else 1.0
-    x_range = (float(x_min - pad_x), float(x_max + pad_x))
-    y_range = (float(y_min - pad_y), float(y_max + pad_y))
+        pad_x = 0.02 * (x_max - x_min) if x_max > x_min else 1.0
+        pad_y = 0.02 * (y_max - y_min) if y_max > y_min else 1.0
+        x_range = (float(x_min - pad_x), float(x_max + pad_x))
+        y_range = (float(y_min - pad_y), float(y_max + pad_y))
 
     # Build heatmaps (cache), sparse quads, and max labels + ticks
     heatmap_meta: Dict[str, Dict[str, Any]] = {}
@@ -295,10 +310,18 @@ def build_layout(root: str,
         y = dataset_feature_arrays[tag][feature2]
 
         if is_cache_valid(cache_path, data_path, force_recalc):
-            cached = np.load(cache_path, allow_pickle=True)
-            H = cached["H"];
-            xedges = cached["xedges"];
-            yedges = cached["yedges"]
+            try:
+                cached = np.load(cache_path, allow_pickle=True)
+                H = cached["H"]
+                xedges = cached["xedges"]
+                yedges = cached["yedges"]
+                # Verify cached data matches expected dimensions
+                if H.shape != (len(yedges) - 1, len(xedges) - 1):
+                    raise ValueError("Cached data dimensions don't match")
+            except Exception as e:
+                print(f"Error loading cached data: {e}, recalculating...")
+                H, xedges, yedges = compute_hist2d_custom(x, y, x_range, y_range, n_bins_feat1, n_bins_feat2)
+                np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
         else:
             H, xedges, yedges = compute_hist2d_custom(x, y, x_range, y_range, n_bins_feat1, n_bins_feat2)
             np.savez_compressed(cache_path, H=H, xedges=xedges, yedges=yedges)
