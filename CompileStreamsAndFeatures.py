@@ -190,7 +190,7 @@ def get_unique_identifier(meta):
         tag += ("_" + "_".join(sorted([meta['stream_0'], meta['stream_1'], meta['stream_2'], meta['stream_3']])))
     return tag
 
-def compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=None):
+def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6, prev_datasets=None):
     assert name.endswith('.pkl.bz2'), "Dataset name mustend with .pkl.bz2"
 
     # print the structure of each dataset
@@ -204,10 +204,6 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=None):
 
     # INSPECT SOME HVO SAMPLES
     # create_multitab_from_HVO_Sequences(split_n_bar_phrases_unpermutated_outputstreams[2000:2010], show_tabs=True)
-
-
-
-    accent_v_thresh = 0.6
 
     # Extract control features for all samples
     
@@ -289,7 +285,7 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, prev_datasets=None):
 
     return datasets
 
-def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls):
+def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls, accent_v_thresh = 0.75):
     """
     Compile data for multiple datasets.
     """
@@ -309,9 +305,10 @@ def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls):
 
     # save the dataset
     for key, value in dataset_dict.items():
-        final_dict_fname = f"{key}.pkl.bz2"
+        final_dict_fname = f"{key}_Accent_thresh.pkl.bz2"
         print("Final dictionary filename will be:", final_dict_fname)
-        compiled_data_path = os.path.join(compiled_data_dir, final_dict_fname)
+        os.makedirs(os.path.join(compiled_data_dir, f"accentThresh{accent_v_thresh}"), exist_ok=True)
+        compiled_data_path = os.path.join(os.path.join(compiled_data_dir, f"accentThresh{accent_v_thresh}"), final_dict_fname)
         with bz2.BZ2File(compiled_data_path, 'wb') as f:
             pickle.dump(value, f)
 
@@ -322,6 +319,14 @@ def compile_data_for_multiple_datasets_pkl(data_dir,  dataset_pkls):
 
 if __name__ == "__main__":
 
+    # ARG PARSE ACCENT V THRESH
+    import argparse
+    parser = argparse.ArgumentParser(description="Compile datasets for triple streams.")
+    parser.add_argument("--accent_v_thresh", type=float, default=0.75, help="Accent velocity threshold for accent hits.")
+    args = parser.parse_args()
+    accent_v_thresh = args.accent_v_thresh
+    print("Accent velocity threshold set to:", accent_v_thresh)
+
     # NON LMD DATASETS
     data_dir = "data/triple_streams/split_2bars/rest"
     dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])[::-1]
@@ -330,7 +335,7 @@ if __name__ == "__main__":
         if dataset_pkl_fname.endswith(".pkl.bz2"):
             print(f"\n\n\n\n\n --------> Compiling dataset: {dataset_pkl_fname}")
             print("-" * 80)
-            compile_data_for_multiple_datasets_pkl(data_dir, [dataset_pkl_fname])
+            compile_data_for_multiple_datasets_pkl(data_dir, [dataset_pkl_fname], accent_v_thresh=accent_v_thresh)
             print("\n\n\n √√√√√√√√√√ Finished compiling dataset:", dataset_pkl_fname)
 
     # LMD DATASETS
@@ -338,5 +343,5 @@ if __name__ == "__main__":
     print("-"*80)
     data_dir = "data/triple_streams/split_2bars/lmd_top_four"  # "data/triple_streams/split_2bars/lmd or rest"
     dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])
-    compile_data_for_multiple_datasets_pkl(data_dir, dataset_pkls)
+    compile_data_for_multiple_datasets_pkl(data_dir, dataset_pkls, accent_v_thresh=accent_v_thresh)
     print("\n\n\n √√√√√√√√√ Finished compiling dataset: LMD Top Four Dataset")

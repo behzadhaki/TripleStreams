@@ -113,32 +113,27 @@ def compute_hist2d_custom(
     ymin, ymax = y_range
 
     if n_bins_feat1 is not None and n_bins_feat2 is not None:
-        # Fixed number of bins - standard behavior
         H, xedges, yedges = np.histogram2d(
             feat1_vals, feat2_vals,
             bins=(n_bins_feat1, n_bins_feat2),
             range=[[xmin, xmax], [ymin, ymax]]
         )
     else:
-        # Custom binning with perfect alignment starting at (0,0)
         step = 1 / 32
-
-        # Calculate edges starting exactly at 0
         xedges = np.arange(0, xmax + step, step)
         yedges = np.arange(0, ymax + step, step)
-
-        # Ensure we cover the full range
         if xedges[-1] < xmax:
             xedges = np.append(xedges, xedges[-1] + step)
         if yedges[-1] < ymax:
             yedges = np.append(yedges, yedges[-1] + step)
 
-        # Compute histogram using these exact edges
         H, xedges, yedges = np.histogram2d(
             feat1_vals, feat2_vals,
             bins=(xedges, yedges)
         )
 
+    # IMPORTANT: numpy returns H with shape (nx, ny). We want H[y, x].
+    H = H.T
     return H, xedges, yedges
 
 
