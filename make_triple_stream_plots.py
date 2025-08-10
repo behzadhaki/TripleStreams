@@ -77,7 +77,7 @@ def discover_available_datasets(root_dir: str) -> Dict[str, str]:
 
 
 def ensure_cache_dir(root_dir: str) -> str:
-    cache_dir = os.path.join(root_dir, "cache")
+    cache_dir = os.path.join(root_dir, "analysis/cache")
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 

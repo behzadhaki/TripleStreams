@@ -13,15 +13,18 @@ dim_feedforward_dec: 512
 dim_feedforward_enc: 16
 dropout: 0.1
 embedding_size_src: 3
-embedding_size_tgt: 27
+embedding_size_tgt: 9
 epochs: 1000
 is_testing: false
 latent_dim: 128
 lr: 0.0006369948608989782
 max_len_dec: 32
 max_len_enc: 32
-n_genres: 9      # Only used for MuteGenreLatentVAE
-n_global_density_bins: 10
+n_encoding_control1_tokens: 20,
+n_encoding_control2_tokens: 10,
+n_decoding_control1_tokens: 20,
+n_decoding_control2_tokens: 10,
+n_decoding_control3_tokens: 10,
 nhead_dec: 8
 nhead_enc: 4
 num_decoder_layers: 7

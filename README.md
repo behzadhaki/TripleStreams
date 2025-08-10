@@ -12,3 +12,8 @@ Then, binning the features:
 python BinnifyCompiledStreams.py --accent_v_thresh 0.75 --n_bins 10 --low_percentile 0.0 --high_percentile 0.9
 ```
 
+Then, Train/Test split:
+
+```python
+
+```

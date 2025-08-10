@@ -272,7 +272,8 @@ if __name__ == "__main__":
     # -------------------------
     print("STARTING THE BINNING PROCESS")
 
-    root_path = f"data/triple_streams/cached/CompiledUsingAccentThreshOf{accent_v_thresh}"
+    root_path = f"data/triple_streams/cached/CompiledUsingAccentThreshOf{args.accent_v_thresh}"
+    os.makedirs(root_path, exist_ok=True)
     if not os.path.exists(root_path):
         raise FileNotFoundError(f"The specified root path does not exist: {root_path} \n Make sure you have already ran >> python CompileStreamsAndFeatures.py --accent_v_thresh {args.accent_v_thresh} ")
 
@@ -290,22 +291,24 @@ if __name__ == "__main__":
     y = data_all["Flat Out Vs. Input | Accent | Hamming"]
     y_normalized = data_all["Flat Out Vs. Input | Accent | Hamming Normalized"]
 
-    _, edges_dict = bin_y_within_percentiles(x, y, n_bins=args.bins, low_pct=args.low_percentile,
+    _, edges_dict = bin_y_within_percentiles(x, y, n_bins=args.n_bins, low_pct=args.low_percentile,
                                              high_pct=args.high_percentile)
-    _, edges_dict_normalized = bin_y_within_percentiles(x, y_normalized, n_bins=args.bins, low_pct=args.low_percentile,
+    _, edges_dict_normalized = bin_y_within_percentiles(x, y_normalized, n_bins=args.n_bins, low_pct=args.low_percentile,
                                                         high_pct=args.high_percentile)
 
     # Save the edges_dict to a file
-    new_save_folder = root_path + "_with_" + str(args.bins) + "_bins_in_" + str(args.low_percentile) + "_" + str(args.high_percentile) + "_percentile"
+    new_save_folder = root_path + "_with_" + str(args.n_bins) + "_bins_in_" + str(args.low_percentile) + "_" + str(args.high_percentile) + "_percentile"
+    os.makedirs(new_save_folder, exist_ok=True)
+
     edges_dict_path = os.path.join(new_save_folder,
-                                   f"edges_dict_{args.bins}_bins_{args.low_percentile}_{args.high_percentile}.pkl.bz2")
+                                   f"edges_dict_{args.n_bins}_bins_{args.low_percentile}_{args.high_percentile}.pkl.bz2")
     with bz2.BZ2File(edges_dict_path, 'wb') as f:
         pickle.dump(edges_dict, f)
 
     print(f"Edges dict saved at: {edges_dict_path}")
 
     edges_dict_normalized_path = os.path.join(new_save_folder,
-                                              f"edges_dict_normalized_{args.bins}_bins_{args.low_percentile}_{args.high_percentile}.pkl.bz2")
+                                              f"edges_dict_normalized_{args.n_bins}_bins_{args.low_percentile}_{args.high_percentile}.pkl.bz2")
     with bz2.BZ2File(edges_dict_normalized_path, 'wb') as f:
         pickle.dump(edges_dict_normalized, f)
 
