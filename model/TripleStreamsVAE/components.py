@@ -8,7 +8,7 @@ import math
 # ------------       Positinal Encoding BLOCK                ---------------------
 # --------------------------------------------------------------------------------
 class PositionalEncoding(torch.nn.Module):
-    r"""Inject some information about the relative or absolute position of the tokens
+    r"""Inject some information about the relative or absolute position of the token
         in the sequence. The positional encodings have the same dimension as
         the embeddings, so that the two can be summed. Here, we use sine and cosine
         functions of different frequencies.
@@ -55,7 +55,7 @@ class PositionalEncoding(torch.nn.Module):
         return self.dropout(x)
 
 
-class InputGrooveLayerWithGenre(torch.nn.Module):
+class InputGrooveLayerWithTwoControls(torch.nn.Module):
     """
     Receives a hvo tensor of shape (batch, max_len, 3), and returns a tensor of shape
     (batch, 33, d_model)
@@ -64,11 +64,13 @@ class InputGrooveLayerWithGenre(torch.nn.Module):
 
     def __init__(self, embedding_size, d_model, max_len,
                  velocity_dropout, offset_dropout,
-                 positional_encoding_dropout, n_genres):
-        super(InputGrooveLayerWithGenre, self).__init__()
-        self.n_genres = n_genres
-        self.genre_embedding = torch.nn.Embedding(num_embeddings=self.n_genres, embedding_dim=max_len * d_model)
-
+                 positional_encoding_dropout, n_input_control1_tokens, n_input_control2_tokens):
+        super(InputGrooveLayerWithTwoControls, self).__init__()
+        self.n_input_control1_tokens = n_input_control1_tokens
+        self.input_control1_embedding = torch.nn.Embedding(num_embeddings=self.n_input_control1_tokens, embedding_dim=max_len * d_model)
+        self.n_input_control2_tokens = n_input_control2_tokens
+        self.input_control2_embedding = torch.nn.Embedding(num_embeddings=self.n_input_control2_tokens, embedding_dim=max_len * d_model)
+    
         self.velocity_dropout = torch.nn.Dropout(p=velocity_dropout)
         self.offset_dropout = torch.nn.Dropout(p=offset_dropout)
         self.HitsLinear = torch.nn.Linear(embedding_size//3, d_model, bias=True)
@@ -80,7 +82,8 @@ class InputGrooveLayerWithGenre(torch.nn.Module):
         self.PositionalEncoding = PositionalEncoding(d_model, (max_len), positional_encoding_dropout)
 
     def init_weights(self, initrange=0.1):
-        self.genre_embedding.weight.data.uniform_(-initrange, initrange)
+        self.input_control1_embedding.weight.data.uniform_(-initrange, initrange)
+        self.input_control2_embedding.weight.data.uniform_(-initrange, initrange)
         self.HitsLinear.weight.data.uniform_(-initrange, initrange)
         self.HitsLinear.bias.data.zero_()
         self.VelocitiesLinear.bias.data.zero_()
@@ -88,14 +91,17 @@ class InputGrooveLayerWithGenre(torch.nn.Module):
         self.OffsetsLinear.bias.data.zero_()
         self.OffsetsLinear.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, hvo, genre_tags):
+    def forward(self, hvo, input_control1_token, input_control2_token):
         '''
 
         :param hvo: shape (batch, 32, 3)
         :return:
         '''
-        if len(genre_tags.shape) == 1:
-            genre_tags = genre_tags.unsqueeze(-1)
+        if len(input_control1_token.shape) == 1:
+            input_control1_token = input_control1_token.unsqueeze(-1)
+
+        if len(input_control2_token.shape) == 1:
+            input_control2_token = input_control2_token.unsqueeze(-1)
 
         hit = hvo[:, :, 0:1]
         vel = hvo[:, :, 1:2]
@@ -104,9 +110,11 @@ class InputGrooveLayerWithGenre(torch.nn.Module):
         hits_projection = self.HitsReLU(self.HitsLinear(hit))
         velocities_projection = self.VelocitiesReLU(self.VelocitiesLinear(self.velocity_dropout(vel)))
         offsets_projection = self.OffsetsReLU(self.OffsetsLinear(self.offset_dropout(offset)))
-        genre_embedding = self.genre_embedding(genre_tags)
-        genre_embedding = genre_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
-        hvo_projection = hits_projection + velocities_projection + offsets_projection + genre_embedding
+        control1_embedding = self.input_control1_embedding(input_control1_token)
+        control1_embedding = control1_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
+        control2_embedding = self.input_control2_embedding(input_control2_token)
+        control2_embedding = control2_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
+        hvo_projection = hits_projection + velocities_projection + offsets_projection + control1_embedding + control2_embedding
         out = self.PositionalEncoding(hvo_projection)
         return out, hit[:, :, 0], hvo_projection
 
@@ -195,7 +203,7 @@ class LatentLayer(torch.nn.Module):
 class SingleFeatureOutputLayer(torch.nn.Module):
     """ Maps the dimension of the output of a decoded sequence into to the dimension of the output
 
-        eg. from (batch, 32, 128) to (batch, 32, 9)
+        eg. from (batch, 32, 128) to (batch, 32, 3)
 
         for either hits, velocities or offsets
         """
@@ -222,20 +230,20 @@ class SingleFeatureOutputLayer(torch.nn.Module):
 
 
 class DecoderInput(torch.nn.Module):
-    """ Embeds the genres and adds them to the latent space representation.
+    """ Embeds the output controls and adds them to the latent space representation.
     Then the result is reshaped to [batch, max_len, d_model_dec] to be used as input to the decoder
     """
 
-    def __init__(self, max_len, latent_dim, d_model):
+    def __init__(self, max_len, latent_dim, d_model,
+                 n_stream1_control_tokens, n_stream2_control_tokens, n_stream3_control_tokens):
+
         super(DecoderInput, self).__init__()
         self.max_len = max_len
         self.d_model = d_model
 
-        self.kick_is_muted_embedding = torch.nn.Embedding(num_embeddings=2, embedding_dim=latent_dim)
-        self.snare_is_muted_embedding = torch.nn.Embedding(num_embeddings=2, embedding_dim=latent_dim)
-        self.hat_is_muted_embedding = torch.nn.Embedding(num_embeddings=2, embedding_dim=latent_dim)
-        self.tom_is_muted_embedding = torch.nn.Embedding(num_embeddings=2, embedding_dim=latent_dim)
-        self.cymbal_is_muted_embedding = torch.nn.Embedding(num_embeddings=2, embedding_dim=latent_dim)
+        self.control1_embedding = torch.nn.Embedding(num_embeddings=n_stream1_control_tokens, embedding_dim=latent_dim)
+        self.control2_embedding = torch.nn.Embedding(num_embeddings=n_stream2_control_tokens, embedding_dim=latent_dim)
+        self.control3_embedding = torch.nn.Embedding(num_embeddings=n_stream3_control_tokens, embedding_dim=latent_dim)
 
         self.fc = torch.nn.Linear(int(latent_dim), int(max_len * d_model))
         self.reLU = torch.nn.ReLU()
@@ -243,50 +251,39 @@ class DecoderInput(torch.nn.Module):
     def init_weights(self, initrange=0.1):
         self.fc.bias.data.zero_()
         self.fc.weight.data.uniform_(-initrange, initrange)
-        self.kick_is_muted_embedding.weight.data.uniform_(-initrange, initrange)
-        self.snare_is_muted_embedding.weight.data.uniform_(-initrange, initrange)
-        self.hat_is_muted_embedding.weight.data.uniform_(-initrange, initrange)
-        self.tom_is_muted_embedding.weight.data.uniform_(-initrange, initrange)
-        self.cymbal_is_muted_embedding.weight.data.uniform_(-initrange, initrange)
+        self.control1_embedding.weight.data.uniform_(-initrange, initrange)
+        self.control2_embedding.weight.data.uniform_(-initrange, initrange)
+        self.control3_embedding.weight.data.uniform_(-initrange, initrange)
 
     @torch.jit.export
     def forward(self,
                 latent_z: torch.Tensor,
-                kick_is_muted: torch.Tensor,
-                snare_is_muted: torch.Tensor,
-                hat_is_muted: torch.Tensor,
-                tom_is_muted: torch.Tensor,
-                cymbal_is_muted: torch.Tensor):
+                stream1_control_token: torch.Tensor,
+                stream2_control_token: torch.Tensor,
+                stream3_control_token: torch.Tensor):
         """
         applies the activation functions and reshapes the input tensor to fix dimensions with decoder
 
         :param latent_z: shape (batch, latent_dim)
-        :param genre_tags:  shape (batch) or (batch, 1)
-        :param kick_is_muted:  shape (batch) or (batch, 1)
-        :param snare_is_muted:  shape (batch) or (batch, 1)
-        :param hat_is_muted:  shape (batch) or (batch, 1)
-        :param tom_is_muted:  shape (batch) or (batch, 1)
-        :param cymbal_is_muted:  shape (batch) or (batch, 1)
+        :param stream1_control_token:  shape (batch) or (batch, 1)
+        :param stream2_control_token:  shape (batch) or (batch, 1)
+        :param stream3_control_token:  shape (batch) or (batch, 1)
 
         :return:
-                projected (latent+genre_embedded) into the shape (batch, max_len, d_model_dec)
+                projected (latent+outputstream controls projected) into the shape (batch, max_len, d_model_dec)
         """
 
 
-        if len(kick_is_muted.shape) == 2:
-            kick_is_muted = kick_is_muted.squeeze(-1)
-        if len(snare_is_muted.shape) == 2:
-            snare_is_muted = snare_is_muted.squeeze(-1)
-        if len(hat_is_muted.shape) == 2:
-            hat_is_muted = hat_is_muted.squeeze(-1)
-        if len(tom_is_muted.shape) == 2:
-            tom_is_muted = tom_is_muted.squeeze(-1)
-        if len(cymbal_is_muted.shape) == 2:
-            cymbal_is_muted = cymbal_is_muted.squeeze(-1)
+        if len(stream1_control_token.shape) == 2:
+            stream1_control_token = stream1_control_token.squeeze(-1)
+        if len(stream2_control_token.shape) == 2:
+            stream2_control_token = stream2_control_token.squeeze(-1)
+        if len(stream3_control_token.shape) == 2:
+            stream3_control_token = stream3_control_token.squeeze(-1)
 
         latent_z = (latent_z +
-                    self.kick_is_muted_embedding(kick_is_muted) + self.snare_is_muted_embedding(snare_is_muted) +
-                    self.hat_is_muted_embedding(hat_is_muted) + self.tom_is_muted_embedding(tom_is_muted) +
-                    self.cymbal_is_muted_embedding(cymbal_is_muted))
+                    self.control1_embedding(stream1_control_token) +
+                    self.control2_embedding(stream2_control_token) +
+                    self.control3_embedding(stream3_control_token))
 
         return self.reLU(self.fc.forward(latent_z)).view(-1, self.max_len, self.d_model)
