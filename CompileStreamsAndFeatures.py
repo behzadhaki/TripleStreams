@@ -1,4 +1,7 @@
-from triple_stream_data_utils import  get_split_to_streams, Jaccard_similarity, hamming_distance, print_all_datasets_structure, get_split_n_bar_phrases, get_accent_hits_from_velocities, list_permutations
+try:
+    from triple_stream_data_utils import  get_split_to_streams, Jaccard_similarity, hamming_distance, print_all_datasets_structure, get_split_n_bar_phrases, get_accent_hits_from_velocities, list_permutations
+except Exception as e:
+    pass
 
 # LOAD DATASETS
 import tqdm
@@ -207,7 +210,7 @@ def compile_data_for_a_single_dataset_pkl(data_dir, name, accent_v_thresh = 0.6,
     # create_multitab_from_HVO_Sequences(split_n_bar_phrases_unpermutated_outputstreams[2000:2010], show_tabs=True)
 
     # Extract control features for all samples
-    
+
     datasets = {} if prev_datasets is None else prev_datasets
 
     def mix_streams_into_hvo(streams_list):

@@ -5,3 +5,4 @@ from data.src.utils import get_drum_mapping_using_label
 from data.src.dataLoaders import load_bz2_hvo_sequences
 from data.src.dataLoaders import MonotonicGrooveDataset
 from data.src.dataLoaders import Groove2Drum2BarDataset
+from data.src.dataLoaders import Groove2TripleStreams2BarDataset

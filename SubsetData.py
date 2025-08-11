@@ -146,7 +146,7 @@ if __name__ == "__main__":
     special_features_dict = {key: [] for key in special_features_keys}
 
     # Iterate through each pkl.bz2 file and load the data
-    for pkl_bz2_file in tqdm.tqdm(pkl_bz2_collections[:1]):
+    for pkl_bz2_file in tqdm.tqdm(pkl_bz2_collections):
         collection_path = os.path.join(root_path, pkl_bz2_file)
         collection_data = load_compiled_dataset_pkl_bz2(collection_path, allow_pickle_arrays=True)
 

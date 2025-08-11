@@ -1,21 +1,164 @@
 from data.src.utils import (get_data_directory_using_filters, get_drum_mapping_using_label,
                             load_original_gmd_dataset_pickle, extract_hvo_sequences_dict, pickle_hvo_dict)
-import numpy as np
 import torch
 from tqdm import tqdm
 from torch.utils.data import Dataset
 from math import ceil
 import json
-import os
-import pickle
-import bz2
 import logging
 import random
 from data import *
 
+import hashlib
+import base64
+from typing import Literal
+
+import tqdm
+import os
+import bz2
+import pickle
+import io
+import numpy as np
+
 logging.basicConfig(level=logging.DEBUG)
 dataLoaderLogger = logging.getLogger("data.Base.dataLoaders")
 
+
+
+# ------------ helpers: encode/decode arrays as .npy bytes ------------
+def _ndarray_to_npy_bytes(arr, allow_pickle=False):
+    buf = io.BytesIO()
+    # .npy format is versioned & stable; this avoids numpy's pickle reducers
+    np.save(buf, arr, allow_pickle=allow_pickle)
+    return buf.getvalue()
+
+def _npy_bytes_to_ndarray(b, allow_pickle=False):
+    buf = io.BytesIO(b)
+    return np.load(buf, allow_pickle=allow_pickle)
+
+def _encode_for_pickle(obj, allow_pickle_arrays=False):
+    """
+    Recursively convert ndarrays into a small marker dict with .npy bytes.
+    Everything else is returned as-is (and will be pickled normally).
+    """
+    if isinstance(obj, np.ndarray):
+        return {"__npy__": True, "data": _ndarray_to_npy_bytes(obj, allow_pickle=allow_pickle_arrays)}
+    elif isinstance(obj, dict):
+        return {k: _encode_for_pickle(v, allow_pickle_arrays) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        t = type(obj)
+        return t(_encode_for_pickle(v, allow_pickle_arrays) for v in obj)
+    else:
+        return obj
+
+def _decode_after_unpickle(obj, allow_pickle_arrays=False):
+    """
+    Inverse of _encode_for_pickle: turn marker dicts back into ndarrays.
+    """
+    if isinstance(obj, dict):
+        if obj.keys() == {"__npy__", "data"} and obj.get("__npy__") is True:
+            return _npy_bytes_to_ndarray(obj["data"], allow_pickle=allow_pickle_arrays)
+        else:
+            return {k: _decode_after_unpickle(v, allow_pickle_arrays) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        t = type(obj)
+        return t(_decode_after_unpickle(v, allow_pickle_arrays) for v in obj)
+    else:
+        return obj
+
+def load_pkl_bz2_dict(dataset_pkl_bz2, *, allow_pickle_arrays=False):
+    """
+    Load a compiled dataset saved by compile_data_for_multiple_datasets_pkl().
+    """
+    assert dataset_pkl_bz2.endswith(".pkl.bz2"), "Dataset name must end with .pkl.bz2"
+    compiled_data_path = dataset_pkl_bz2
+    if not os.path.exists(compiled_data_path):
+        raise FileNotFoundError(f"No compiled dataset found at {compiled_data_path}")
+
+    with bz2.BZ2File(compiled_data_path, 'rb') as f:
+        raw = pickle.load(f)
+    return _decode_after_unpickle(raw, allow_pickle_arrays=allow_pickle_arrays)
+
+
+def hash_string_to_name(
+    text: str,
+    method: Literal['md5', 'sha1', 'sha256'] = 'md5',
+    length: int = 8,
+    prefix: str = '',
+    encoding: Literal['hex', 'base64', 'base32'] = 'hex'
+) -> str:
+    """
+    Create a reproducible hashed name from a long string.
+
+    Args:
+        text: Input string to hash
+        method: Hash algorithm ('md5', 'sha1', 'sha256')
+        length: Length of the hash to keep (after encoding)
+        prefix: Optional prefix for the hashed name
+        encoding: How to encode the hash ('hex', 'base64', 'base32')
+
+    Returns:
+        Reproducible hashed name
+    """
+    # Create hash object
+    if method == 'md5':
+        hasher = hashlib.md5()
+    elif method == 'sha1':
+        hasher = hashlib.sha1()
+    elif method == 'sha256':
+        hasher = hashlib.sha256()
+    else:
+        raise ValueError(f"Unsupported hash method: {method}")
+
+    # Hash the text
+    hasher.update(text.encode('utf-8'))
+
+    # Get the hash in different encodings
+    if encoding == 'hex':
+        hash_str = hasher.hexdigest()
+    elif encoding == 'base64':
+        hash_str = base64.b64encode(hasher.digest()).decode('ascii').rstrip('=')
+    elif encoding == 'base32':
+        hash_str = base64.b32encode(hasher.digest()).decode('ascii').rstrip('=').lower()
+    else:
+        raise ValueError(f"Unsupported encoding: {encoding}")
+
+    # Truncate to desired length
+    hash_str = hash_str[:length]
+
+    # Add prefix if provided
+    return f"{prefix}{hash_str}" if prefix else hash_str
+
+def deterministic_short_name(text: str, max_length: int = 12) -> str:
+    """
+    Create a deterministic short name that's somewhat readable.
+
+    Args:
+        text: Input string
+        max_length: Maximum length of output
+
+    Returns:
+        Short, deterministic name
+    """
+    # If already short enough, clean and return
+    if len(text) <= max_length:
+        clean = ''.join(c.lower() if c.isalnum() else '_' for c in text)
+        return clean[:max_length].strip('_')
+
+    # Take first part + hash
+    first_part = ''.join(c.lower() for c in text if c.isalnum())[:4]
+    if not first_part:
+        first_part = "str"
+
+    # Calculate remaining space for hash
+    remaining = max_length - len(first_part) - 1  # -1 for underscore
+    if remaining < 4:
+        remaining = 4
+        first_part = first_part[:max_length - remaining - 1]
+
+    hash_part = hash_string_to_name(text, length=remaining, encoding='hex')
+
+    return f"{first_part}_{hash_part}"
 
 def get_bin_bounds_for_voice_densities(voice_counts_per_sample: list, num_nonzero_bins=3):
     """
@@ -130,6 +273,48 @@ def map_value_to_bins(value, edges):
                 return i
 
     print("SHOULD NOT REACH HERE")
+
+def TokenizeControls(
+        control_array: np.ndarray,
+        n_bins: int,
+        low: float = 0,
+        high: float = 1
+) -> np.ndarray:
+    """
+    Map control values to integer bin indices using uniform binning.
+
+    Args:
+        control_array: Numpy array of control values to bin
+        n_bins: Number of bins to create
+        low: Lower bound of binning range (default 0)
+        high: Upper bound of binning range (default 1)
+
+    Returns:
+        Numpy array of integer bin indices (0 to n_bins-1)
+
+    Example:
+        For n_bins=4, low=0, high=1:
+        - values < 0.25 → bin 0
+        - 0.25 ≤ values < 0.5 → bin 1
+        - 0.5 ≤ values < 0.75 → bin 2
+        - 0.75 ≤ values → bin 3
+    """
+    # Ensure scalar inputs
+    n_bins = int(n_bins)
+    low = float(low)
+    high = float(high)
+
+    # Create bin edges
+    bin_edges = np.linspace(low, high, n_bins + 1)
+
+    # Use digitize to assign bins (subtract 1 to get 0-based indexing)
+    bin_indices = np.digitize(control_array, bin_edges) - 1
+
+    # Clamp to valid range [0, n_bins-1]
+    bin_indices = np.clip(bin_indices, 0, n_bins - 1)
+
+    return bin_indices
+
 
 def map_drum_to_groove_hit_ratio_to_categorical(hit_ratios):
     # check bottomn of the file for the bin calculation
@@ -247,7 +432,7 @@ def collect_train_set_info(dataset_setting_json_path_, num_voice_density_bins, n
             None,
             (min(train_set_complexities), max(train_set_complexities)), sorted(train_set_genre_tags),
             train_set_total_hits, train_set_hvo_files)
-        
+
 class MonotonicGrooveDataset(Dataset):
     def __init__(self, dataset_setting_json_path, subset_tag, max_len, tapped_voice_idx=2,
                  collapse_tapped_sequence=False, load_as_tensor=True, sort_by_metadata_key=None,
@@ -1091,20 +1276,14 @@ class Groove2Drum2BarDataset(Dataset):
             tempo_histogram_per_genre["all"].append(self.tempos[idx].item())
 
         return tempo_histogram_per_genre
-    
+
 
 class Groove2TripleStreams2BarDataset(Dataset):
-    def __init__(self, dataset_setting_json_path,
-                 subset_tag,
-                 max_len,
-                 tapped_voice_idx=2,
-                 collapse_tapped_sequence=False,
-                 down_sampled_ratio=None, move_all_to_gpu=False,
-                 augment_dataset=False,
+    def __init__(self,
+                 config,
+                 subset_tag,            # pass "train" or "validation" or "test"
                  use_cached=True,
-                 num_voice_density_bins=None,
-                 num_tempo_bins=None,
-                 num_global_density_bins=None,
+                 down_sampled_size=None,
                  force_regenerate=False):
 
         """
@@ -1123,320 +1302,147 @@ class Groove2TripleStreams2BarDataset(Dataset):
         :param num_global_density_bins: [int] number of bins to use for global density (if None, will be set to 8)
         :param force_regenerate: [bool] if True, will regenerate the cached version of the dataset
         """
-        self.dataset_setting_json_path = dataset_setting_json_path
 
-        if num_voice_density_bins is None:
-            num_voice_density_bins = 3
+        if down_sampled_size is not None:
+            if down_sampled_size >= 1:
+                down_sampled_size = None
 
-        if num_tempo_bins is None:
-            num_tempo_bins = 6
+        self.dataset_setting_json_path = config["dataset_setting_json_path"]
+        self.subset_tag = subset_tag
+        self.max_len = config["max_len"]
+        self.n_encoding_control1_tokens = config["n_encoding_control1_tokens"]
+        self.encoding_control1_key = config["encoding_control1_key"]
+        self.n_encoding_control2_tokens = config["n_encoding_control2_tokens"]
+        self.encoding_control2_key = config["encoding_control2_key"]
+        self.n_decoding_control1_tokens = config["n_decoding_control1_tokens"]
+        self.decoding_control1_key = config["decoding_control1_key"]
+        self.n_decoding_control2_tokens = config["n_decoding_control2_tokens"]
+        self.decoding_control2_key = config["decoding_control2_key"]
+        self.n_decoding_control3_tokens = config["n_decoding_control3_tokens"]
+        self.decoding_control3_key = config["decoding_control3_key"]
+        self.down_sampled_size = down_sampled_size
+        with open(self.dataset_setting_json_path, "r") as f:
+            self.json = json.load(f)
 
-        if num_global_density_bins is None:
-            num_global_density_bins = 8
-
-        if down_sampled_ratio == 1:
-            down_sampled_ratio = None
+        def get_source_compiled_data_dictionary_path():
+            return os.path.join(self.json["compiled_pkl_bz2_path"], self.subset_tag + ".pkl.bz2")
 
         def get_cached_filepath():
-            dir_ = "cached/TorchDatasets"
-            filename = (f"{dataset_setting_json_path.split('/')[-1]}_{subset_tag}_{max_len}_{tapped_voice_idx}"
-                        f"_{collapse_tapped_sequence}_{down_sampled_ratio}_{augment_dataset}_{num_voice_density_bins}_{num_tempo_bins}_{num_global_density_bins}.bz2pickle")
+            dir_ = os.path.join("cached/TorchDatasets", self.json["tag"], self.subset_tag)
+            os.makedirs(dir_, exist_ok=True)
+            filename = f"{self.subset_tag}_{self.max_len}_{self.down_sampled_size}" \
+            f"_{self.n_encoding_control1_tokens}_{self.encoding_control1_key}" \
+            f"_{self.n_encoding_control2_tokens}_{self.encoding_control2_key}" \
+            f"_{self.n_decoding_control1_tokens}_{self.decoding_control1_key}" \
+            f"_{self.n_decoding_control2_tokens}_{self.decoding_control2_key}" \
+            f"_{self.n_decoding_control3_tokens}_{self.decoding_control3_key}"
+
+            filename = hash_string_to_name(filename) + ".bz2pickle"
             if not os.path.exists(dir_):
                 os.makedirs(dir_)
             return os.path.join(dir_, filename)
 
         # check if cached version exists
         # ------------------------------------------------------------------------------------------
+        process_data = True
+
         if use_cached and not force_regenerate:
             if os.path.exists(get_cached_filepath()):
-                dataLoaderLogger.info(f"Groove2Drum2BarDataset Constructor --> Loading Cached Version from: {get_cached_filepath()}")
+                dataLoaderLogger.info(f"Groove2TripleStreams2BarDataset Constructor --> Loading Cached Version from: {get_cached_filepath()}")
                 ifile = bz2.BZ2File(get_cached_filepath(), 'rb')
                 data = pickle.load(ifile)
                 ifile.close()
+
                 self.input_grooves = torch.tensor(data["input_grooves"], dtype=torch.float32)
-                self.output_grooves = torch.tensor(data["output_grooves"], dtype=torch.float32)
-                self.genre_encodings = torch.tensor(data["genre_encodings"], dtype=torch.float32)
-                self.genre_mapping = data["genre_mapping"]
-                self.genre_targets = torch.tensor(data["genre_targets"], dtype=torch.long)
-                self.min_complexity = data["min_complexity"]
-                self.max_complexity = data["max_complexity"]
-                self.complexities = torch.tensor(data["complexities"], dtype=torch.float32)
-                self.tempos = torch.tensor(data["tempos"], dtype=torch.long)
-                self.num_tempo_bins = data["num_tempo_bins"]
-                self.tempo_bins = torch.tensor(data["tempo_bins"], dtype=torch.long)
-                self.hvo_sequences = data["hvo_sequences"]
-                self.genre_tags = sorted(list(self.genre_mapping.keys()))
-                self.num_genres = len(self.genre_tags) + 1
-                self.kick_counts = data["kick_counts"]
-                self.kick_density_bins = torch.tensor(data["kick_density_bins"], dtype=torch.long)
-                self.kick_is_muted = torch.tensor(data["kick_is_muted"], dtype=torch.long)
-                self.snare_counts = data["snare_counts"]
-                self.snare_density_bins = torch.tensor(data["snare_density_bins"], dtype=torch.long)
-                self.snare_is_muted = torch.tensor(data["snare_is_muted"], dtype=torch.long)
-                self.hat_counts = data["hat_counts"]
-                self.hat_density_bins = torch.tensor(data["hat_density_bins"], dtype=torch.long)
-                self.hat_is_muted = torch.tensor(data["hat_is_muted"], dtype=torch.long)
-                self.tom_counts = data["tom_counts"]
-                self.tom_density_bins = torch.tensor(data["tom_density_bins"], dtype=torch.long)
-                self.tom_is_muted = torch.tensor(data["tom_is_muted"], dtype=torch.long)
-                self.cymbal_counts = data["cymbal_counts"]
-                self.cymbal_density_bins = torch.tensor(data["cymbal_density_bins"], dtype=torch.long)
-                self.cymbal_is_muted = torch.tensor(data["cymbal_is_muted"], dtype=torch.long)
-                self.kick_lowBound_full_trnSet = data["kick_lowBound_full_trnSet"]
-                self.kick_highBound_full_trnSet = data["kick_highBound_full_trnSet"]
-                self.snare_lowBound_full_trnSet = data["snare_lowBound_full_trnSet"]
-                self.snare_highBound_full_trnSet = data["snare_highBound_full_trnSet"]
-                self.hat_lowBound_full_trnSet = data["hat_lowBound_full_trnSet"]
-                self.hat_highBound_full_trnSet = data["hat_highBound_full_trnSet"]
-                self.tom_lowBound_full_trnSet = data["tom_lowBound_full_trnSet"]
-                self.tom_highBound_full_trnSet = data["tom_highBound_full_trnSet"]
-                self.cymbal_lowBound_full_trnSet = data["cymbal_lowBound_full_trnSet"]
-                self.cymbal_highBound_full_trnSet = data["cymbal_highBound_full_trnSet"]
-                self.global_density_bins = torch.tensor(data["global_density_bins"], dtype=torch.long)
+                self.output_streams = torch.tensor(data["output_streams"], dtype=torch.float32)
+                self.flat_output_streams = torch.tensor(data["flat_output_streams"], dtype=torch.float32)
+                self.encoding_control1_tokens = torch.tensor(data["encoding_control1_tokens"], dtype=torch.long)
+                self.encoding_control2_tokens = torch.tensor(data["encoding_control2_tokens"], dtype=torch.long)
+                self.decoding_control1_tokens = torch.tensor(data["decoding_control1_tokens"], dtype=torch.long)
+                self.decoding_control2_tokens = torch.tensor(data["decoding_control2_tokens"], dtype=torch.long)
+                self.decoding_control3_tokens = torch.tensor(data["decoding_control3_tokens"], dtype=torch.long)
+                self.metadata = data["metadata"]
+                self.tempos = data["tempos"]
+                self.collection = data["collection"]
+
                 process_data = False
-            else:
-                dataLoaderLogger.info(f"No Cached Version Available Here: {get_cached_filepath()}. ")
-                process_data = True
-        else:
-            process_data = True
 
         if process_data:
-            # Get processed inputs, outputs and hvo sequences
-            self.input_grooves = list()
-            self.output_grooves = list()
-            self.complexities = list()
-            self.genre_encodings = list()
-            self.genre_targets = list()
-            self.hvo_sequences = list()
-            self.tempos = list()
-            self.tempo_bins = list()
-
-            self.kick_counts = list()               # voice 0
-            self.snare_counts = list()              # voice 1
-            self.hat_counts = list()                # voices 2, 3
-            self.tom_counts = list()                # voices 4, 5, 6
-            self.cymbal_counts = list()             # voices 7, 8
-            self.hit_counts = list()                # all voices
-            self.kick_is_muted = list()             # voice 0
-            self.snare_is_muted = list()            # voice 1
-            self.hat_is_muted = list()              # voices 2, 3
-            self.tom_is_muted = list()              # voices 4, 5, 6
-            self.cymbal_is_muted = list()           # voices 7, 8
-
-            # up sample to ensure genre balance
             # ------------------------------------------------------------------------------------------
             # load pre-stored hvo_sequences or
             #   a portion of them uniformly sampled if down_sampled_ratio is provided
             # ------------------------------------------------------------------------------------------
-            if down_sampled_ratio is None:
-                subset = load_bz2_hvo_sequences(dataset_setting_json_path, subset_tag, force_regenerate=False)
-            else:
-                subset = load_downsampled_mega_set_hvo_sequences(
-                    dataset_setting_json_path=dataset_setting_json_path,
-                    subset_tag=subset_tag,
-                    force_regenerate=force_regenerate,
-                    down_sampled_ratio=down_sampled_ratio,
-                    cache_down_sampled_set=True
-                )
+            print("\n\n LOADING THE DICTIONARY CONTAINING RAW DATA")
+            loaded_data_dictionary = load_pkl_bz2_dict(get_source_compiled_data_dictionary_path(), allow_pickle_arrays=True)
+
+            # check if only a subset of the data is needed
+            if self.down_sampled_size is not None:
+                n_samples = len(loaded_data_dictionary[loaded_data_dictionary.keys()[0]])
+                sampled_indices = np.random.choice(n_samples, self.down_sampled_size, replace=False)
+                for k, v in loaded_data_dictionary.items():
+                    loaded_data_dictionary[k] = v[sampled_indices]
 
 
-            # collect genre map using the full TRAINING set only!!!
+            # Populate already available fields
             # ------------------------------------------------------------------------------------------
-            train_set_info = collect_train_set_info(dataset_setting_json_path,
-                                                    num_voice_density_bins=num_voice_density_bins,
-                                                    num_global_density_bins=num_global_density_bins,
-                                                    max_len=max_len)
-            self.kick_lowBound_full_trnSet, self.kick_highBound_full_trnSet = train_set_info[0]
-            self.snare_lowBound_full_trnSet, self.snare_highBound_full_trnSet = train_set_info[1]
-            self.hat_lowBound_full_trnSet, self.hat_highBound_full_trnSet = train_set_info[2]
-            self.tom_lowBound_full_trnSet, self.tom_highBound_full_trnSet = train_set_info[3]
-            self.cymbal_lowBound_full_trnSet, self.cymbal_highBound_full_trnSet = train_set_info[4]
-            self.min_complexity, self.max_complexity = train_set_info[6]
-            self.genre_tags = train_set_info[7]
+            self.input_grooves = np.array(loaded_data_dictionary["input_hvos"])
+            self.output_streams = np.array(loaded_data_dictionary["output_hvos"])
+            self.flat_output_streams = np.array(loaded_data_dictionary["flat_out_hvos"])
+            self.metadata = loaded_data_dictionary["metadata"]
+            self.tempos = loaded_data_dictionary["qpm"]
+            self.collection = loaded_data_dictionary["collection"]
 
-            self.num_genres = len(self.genre_tags)
-            # create a one-hot encoding for each genre
-            self.genre_mapping = {genre: np.eye(self.num_genres)[idx].tolist() for idx, genre in enumerate(self.genre_tags)}
-
-            # collect input tensors, output tensors, and hvo_sequences
+            # Populate control tokens
             # ------------------------------------------------------------------------------------------
-            for idx, hvo_seq in enumerate(tqdm(subset, desc="loading data and extracting input output tensors")):
-                if hvo_seq.hits is not None:
-                    hvo_seq.adjust_length(max_len)
-                    if np.any(hvo_seq.hits):
-                        # Ensure all have a length of max_len
-                        self.hvo_sequences.append(hvo_seq)
-                        self.output_grooves.append(hvo_seq.hvo)
-                        flat_seq = hvo_seq.flatten_voices(voice_idx=tapped_voice_idx, reduce_dim=collapse_tapped_sequence)
-                        self.input_grooves.append(flat_seq)
-                        self.genre_encodings.append(self.map_genre_to_one_hot(hvo_seq.metadata["style_primary"]))
-                        self.complexities.append(hvo_seq.get_complexity_surprisal()[0])
-                        self.tempos.append(hvo_seq.tempos[0].qpm)
-                        self.tempo_bins.append(map_tempo_to_categorical(hvo_seq.tempos[0].qpm))
 
-                        hits = hvo_seq.hits
-                        self.hit_counts.append(np.sum(hits))
-                        self.kick_counts.append(hits[:, 0].sum())
-                        self.snare_counts.append(hits[:, 1].sum())
-                        self.hat_counts.append(hits[:, 2:4].sum())
-                        self.tom_counts.append(hits[:, 4:7].sum())
-                        self.cymbal_counts.append(hits[:, 7:].sum())
-
-                        self.kick_is_muted.append(1 if self.kick_counts[-1] == 0 else 0)
-                        self.snare_is_muted.append(1 if self.snare_counts[-1] == 0 else 0)
-                        self.hat_is_muted.append(1 if self.hat_counts[-1] == 0 else 0)
-                        self.tom_is_muted.append(1 if self.tom_counts[-1] == 0 else 0)
-                        self.cymbal_is_muted.append(1 if self.cymbal_counts[-1] == 0 else 0)
-
-            self.tempos = torch.tensor(np.array(self.tempos), dtype=torch.long)
-            self.kick_density_bins = map_voice_densities_to_categorical(self.kick_counts,
-                                                                        self.kick_lowBound_full_trnSet.copy(),
-                                                                        self.kick_highBound_full_trnSet.copy())
-            self.snare_density_bins = map_voice_densities_to_categorical(self.snare_counts,
-                                                                         self.snare_lowBound_full_trnSet.copy(),
-                                                                         self.snare_highBound_full_trnSet.copy())
-            self.hat_density_bins = map_voice_densities_to_categorical(self.hat_counts,
-                                                                       self.hat_lowBound_full_trnSet.copy(),
-                                                                       self.hat_highBound_full_trnSet.copy())
-            self.tom_density_bins = map_voice_densities_to_categorical(self.tom_counts,
-                                                                       self.tom_lowBound_full_trnSet.copy(),
-                                                                       self.tom_highBound_full_trnSet.copy())
-            self.cymbal_density_bins = map_voice_densities_to_categorical(self.cymbal_counts,
-                                                                          self.cymbal_lowBound_full_trnSet.copy(),
-                                                                          self.cymbal_highBound_full_trnSet.copy())
-
-
-            # Load as tensors
-            self.input_grooves = torch.tensor(np.array(self.input_grooves), dtype=torch.float32)
-            self.output_grooves = torch.tensor(np.array(self.output_grooves), dtype=torch.float32)
-            self.genre_encodings = torch.tensor(np.array(self.genre_encodings), dtype=torch.float32)
-            self.genre_targets = torch.argmax(self.genre_encodings, dim=1)
-
-            groove_hit_counts = self.input_grooves[:, :, 0].sum(dim=1)
-            output_groove_counts = self.output_grooves[:, :, :9].sum(dim=1).sum(dim=1)
-            ratio = output_groove_counts / groove_hit_counts
-            ratio = ratio.numpy()
-            print(f"Max Ratio of output_groove_counts / groove_hit_counts: {ratio.max()}, shape: {ratio.shape}")
-            # self.global_density_bins = map_global_density_to_categorical(self.hit_counts,
-            #                                                              max_hits=max(self.hit_counts),
-            #                                                              n_global_density_bins=num_global_density_bins)
-            self.global_density_bins = torch.tensor(np.array(map_drum_to_groove_hit_ratio_to_categorical(ratio)), dtype=torch.long)
-            self.complexities = torch.tensor(np.array(self.complexities), dtype=torch.float32)
-            self.complexities = torch.clamp((self.complexities - self.min_complexity) / (self.max_complexity - self.min_complexity), 0, 1)
-
-            self.tempo_bins = torch.tensor(np.array(self.tempo_bins), dtype=torch.long)
-            self.kick_density_bins = torch.tensor(np.array(self.kick_density_bins), dtype=torch.long)
-            self.snare_density_bins = torch.tensor(np.array(self.snare_density_bins), dtype=torch.long)
-            self.hat_density_bins = torch.tensor(np.array(self.hat_density_bins), dtype=torch.long)
-            self.tom_density_bins = torch.tensor(np.array(self.tom_density_bins), dtype=torch.long)
-            self.cymbal_density_bins = torch.tensor(np.array(self.cymbal_density_bins), dtype=torch.long)
-            self.global_density_bins = torch.tensor(np.array(self.global_density_bins), dtype=torch.long)
-
-            self.kick_is_muted = torch.tensor(np.array(self.kick_is_muted), dtype=torch.long)
-            self.snare_is_muted = torch.tensor(np.array(self.snare_is_muted), dtype=torch.long)
-            self.hat_is_muted = torch.tensor(np.array(self.hat_is_muted), dtype=torch.long)
-            self.tom_is_muted = torch.tensor(np.array(self.tom_is_muted), dtype=torch.long)
-            self.cymbal_is_muted = torch.tensor(np.array(self.cymbal_is_muted), dtype=torch.long)
-
-            if augment_dataset:
-                # augment the dataset by appending the bar-swapped version of each sequence
-                self.hvo_sequences = self.hvo_sequences * 2
-
-                # inputs (N, 32, 27)
-                # append with rotated 16 steps
-                self.input_grooves = torch.cat([self.input_grooves, torch.roll(self.input_grooves, 16, dims=1)], dim=0)
-                self.output_grooves = torch.cat([self.output_grooves, torch.roll(self.output_grooves, 16, dims=1)], dim=0)
-                self.complexities = torch.cat([self.complexities, self.complexities], dim=0)
-                self.genre_encodings = torch.cat([self.genre_encodings, self.genre_encodings], dim=0)
-                self.genre_targets = torch.cat([self.genre_targets, self.genre_targets], dim=0)
-                self.tempos = torch.cat([self.tempos, self.tempos], dim=0)
-                self.tempo_bins = torch.cat([self.tempo_bins, self.tempo_bins], dim=0)
-                self.kick_density_bins = torch.cat([self.kick_density_bins, self.kick_density_bins], dim=0)
-                self.snare_density_bins = torch.cat([self.snare_density_bins, self.snare_density_bins], dim=0)
-                self.hat_density_bins = torch.cat([self.hat_density_bins, self.hat_density_bins], dim=0)
-                self.tom_density_bins = torch.cat([self.tom_density_bins, self.tom_density_bins], dim=0)
-                self.cymbal_density_bins = torch.cat([self.cymbal_density_bins, self.cymbal_density_bins], dim=0)
-                self.global_density_bins = torch.cat([self.global_density_bins, self.global_density_bins], dim=0)
-                self.kick_is_muted = torch.cat([self.kick_is_muted, self.kick_is_muted], dim=0)
-                self.snare_is_muted = torch.cat([self.snare_is_muted, self.snare_is_muted], dim=0)
-                self.hat_is_muted = torch.cat([self.hat_is_muted, self.hat_is_muted], dim=0)
-                self.tom_is_muted = torch.cat([self.tom_is_muted, self.tom_is_muted], dim=0)
-                self.cymbal_is_muted = torch.cat([self.cymbal_is_muted, self.cymbal_is_muted], dim=0)
-
-
-
-                # add the rolled groove to the second half of the hvo_sequences
-                for idx, hvo_seq in enumerate(self.hvo_sequences[len(self.hvo_sequences) // 2:]):
-                    hvo_seq.hvo = self.output_grooves[idx].numpy()
+            self.encoding_control1_tokens = TokenizeControls(
+                control_array=np.round(loaded_data_dictionary[self.encoding_control1_key], 5),
+                n_bins=self.n_encoding_control1_tokens, low=0, high=1)
+            self.encoding_control2_tokens = TokenizeControls(
+                control_array=np.round(loaded_data_dictionary[self.encoding_control2_key], 5),
+                n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
+            self.decoding_control1_tokens = TokenizeControls(
+                control_array=np.round(loaded_data_dictionary[self.decoding_control1_key], 5),
+                n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
+            self.decoding_control2_tokens = TokenizeControls(
+                control_array=np.round(loaded_data_dictionary[self.decoding_control2_key], 5),
+                n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
+            self.decoding_control3_tokens = TokenizeControls(
+                control_array=np.round(loaded_data_dictionary[self.decoding_control3_key], 5),
+                n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
 
             # cache the processed data
             # ------------------------------------------------------------------------------------------
             if use_cached:
+                dataLoaderLogger.info(f"Caching at {get_cached_filepath()}")
                 data_to_dump = {
-                    "input_grooves": self.input_grooves.numpy(),
-                    "output_grooves": self.output_grooves.numpy(),
-                    "genre_encodings": self.genre_encodings.numpy(),
-                    "genre_mapping": self.genre_mapping,
-                    "genre_targets": self.genre_targets.numpy(),
-                    "min_complexity": self.min_complexity,
-                    "max_complexity": self.max_complexity,
-                    "complexities": self.complexities.numpy(),
-                    "tempos": self.tempos.numpy(),
-                    "tempo_bins": self.tempo_bins.numpy(),
-                    "num_tempo_bins": num_tempo_bins,
-                    "n_density_bins": num_voice_density_bins,  # "n_density_bins": "num_voice_density_bins",
-                    "hvo_sequences": self.hvo_sequences,
-                    "kick_counts": self.kick_counts,
-                    "kick_density_bins": self.kick_density_bins.numpy(),
-                    "snare_counts": self.snare_counts,
-                    "snare_density_bins": self.snare_density_bins.numpy(),
-                    "hat_counts": self.hat_counts,
-                    "hat_density_bins": self.hat_density_bins.numpy(),
-                    "tom_counts": self.tom_counts,
-                    "tom_density_bins": self.tom_density_bins.numpy(),
-                    "cymbal_counts": self.cymbal_counts,
-                    "cymbal_density_bins": self.cymbal_density_bins.numpy(),
-                    "kick_lowBound_full_trnSet": self.kick_lowBound_full_trnSet,
-                    "kick_highBound_full_trnSet": self.kick_highBound_full_trnSet,
-                    "snare_lowBound_full_trnSet": self.snare_lowBound_full_trnSet,
-                    "snare_highBound_full_trnSet": self.snare_highBound_full_trnSet,
-                    "hat_lowBound_full_trnSet": self.hat_lowBound_full_trnSet,
-                    "hat_highBound_full_trnSet": self.hat_highBound_full_trnSet,
-                    "tom_lowBound_full_trnSet": self.tom_lowBound_full_trnSet,
-                    "tom_highBound_full_trnSet": self.tom_highBound_full_trnSet,
-                    "cymbal_lowBound_full_trnSet": self.cymbal_lowBound_full_trnSet,
-                    "cymbal_highBound_full_trnSet": self.cymbal_highBound_full_trnSet,
-                    "global_density_bins": self.global_density_bins.numpy(),
-                    "kick_is_muted": self.kick_is_muted.numpy(),
-                    "snare_is_muted": self.snare_is_muted.numpy(),
-                    "hat_is_muted": self.hat_is_muted.numpy(),
-                    "tom_is_muted": self.tom_is_muted.numpy(),
-                    "cymbal_is_muted": self.cymbal_is_muted.numpy()
+                    "input_grooves": self.input_grooves,
+                    "output_streams": self.output_streams,
+                    "flat_output_streams": self.flat_output_streams,
+                    "metadata": self.metadata,
+                    "tempos": self.tempos,
+                    "collection": self.collection,
+                    "encoding_control1_tokens": self.encoding_control1_tokens,
+                    "encoding_control2_tokens": self.encoding_control2_tokens,
+                    "decoding_control1_tokens": self.decoding_control1_tokens,
+                    "decoding_control2_tokens": self.decoding_control2_tokens,
+                    "decoding_control3_tokens": self.decoding_control3_tokens
                 }
+
                 ofile = bz2.BZ2File(get_cached_filepath(), 'wb')
                 pickle.dump(data_to_dump, ofile)
                 ofile.close()
 
-        # Move to GPU if requested and GPU is available
-        # ------------------------------------------------------------------------------------------
-        if move_all_to_gpu and torch.cuda.is_available():
-            self.input_grooves = self.input_grooves.to('cuda')
-            self.output_grooves = self.output_grooves.to('cuda')
-            # self.genre_encodings = self.genre_encodings.to('cuda')
-            self.genre_targets = self.genre_targets.to('cuda')
-            # self.complexities = self.complexities.to('cuda')
-            # self.tempo_bins = self.tempo_bins.to('cuda')
-            # self.kick_density_bins = self.kick_density_bins.to('cuda')
-            # self.snare_density_bins = self.snare_density_bins.to('cuda')
-            # self.hat_density_bins = self.hat_density_bins.to('cuda')
-            # self.tom_density_bins = self.tom_density_bins.to('cuda')
-            # self.cymbal_density_bins = self.cymbal_density_bins.to('cuda')
-            self.global_density_bins = self.global_density_bins.to('cuda')
-            self.kick_is_muted = self.kick_is_muted.to('cuda')
-            self.snare_is_muted = self.snare_is_muted.to('cuda')
-            self.hat_is_muted = self.hat_is_muted.to('cuda')
-            self.tom_is_muted = self.tom_is_muted.to('cuda')
-            self.cymbal_is_muted = self.cymbal_is_muted.to('cuda')
+                # Conver to tensors (patterns as float32 and controls as long)
+                # ------------------------------------------------------------------------------------------
+                self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
+                self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
+                self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
+                self.encoding_control1_tokens = torch.tensor(self.encoding_control1_tokens, dtype=torch.long)
+                self.encoding_control2_tokens = torch.tensor(self.encoding_control2_tokens, dtype=torch.long)
+                self.decoding_control1_tokens = torch.tensor(self.decoding_control1_tokens, dtype=torch.long)
+                self.decoding_control2_tokens = torch.tensor(self.decoding_control2_tokens, dtype=torch.long)
+                self.decoding_control3_tokens = torch.tensor(self.decoding_control3_tokens, dtype=torch.long)
 
         dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
 
@@ -1444,114 +1450,23 @@ class Groove2TripleStreams2BarDataset(Dataset):
         return len(self.hvo_sequences)
 
     def __getitem__(self, idx):
-        return (self.input_grooves[idx],     # 0: input_groove
-                self.complexities[idx],     # 1: complexity
-                self.tempos[idx],           # 2: tempo (real value - not binned)
-                self.genre_encodings[idx],  # 3: genre_encoding (one-hot)
-                self.genre_targets[idx],    # 4: genre_target (categorical)
-                self.output_grooves[idx],   # 5: output_groove (drum hvo)
-                self.global_density_bins[idx],  # 6: global_density_bins
-                self.tempo_bins[idx],       # 7: tempo_bin (categorical)
-                self.kick_is_muted[idx],    # 8: kick_is_muted
-                self.snare_is_muted[idx],   # 9: snare_is_muted
-                self.hat_is_muted[idx],     # 10: hat_is_muted
-                self.tom_is_muted[idx],     # 11: tom_is_muted
-                self.cymbal_is_muted[idx])  # 12: cymbal_is_muted
+        return (self.input_grooves[idx],
+                self.output_streams[idx],
+                self.encoding_control1_tokens[idx],
+                self.encoding_control2_tokens[idx],
+                self.decoding_control1_tokens[idx],
+                self.decoding_control2_tokens[idx],
+                self.decoding_control3_tokens[idx],
+                idx
+                )
 
     def __repr__(self):
         text =  f"    -------------------------------------\n"
         text += "Dataset Loaded using json file: \n"
         text += f"    {self.dataset_setting_json_path}\n"
-        text += f"    ------------ __getitem__ returns a tuple of:\n"
-        text += f"    input_groove: {self.input_grooves.shape}\n"
-        text += f"    kick_density_bins: {self.kick_density_bins.shape}\n"
-        text += f"    snare_density_bins: {self.snare_density_bins.shape}\n"
-        text += f"    hat_density_bins: {self.hat_density_bins.shape}\n"
-        text += f"    tom_density_bins: {self.tom_density_bins.shape}\n"
-        text += f"    cymbal_density_bins: {self.cymbal_density_bins.shape}\n"
-        text += f"    global_density_bins: {self.global_density_bins.shape}\n"
-        text += f"    complexity: {self.complexities.shape}\n"
-        text += f"    tempo: {self.tempos.shape}\n"
-        text += f"    genre_encoding: {self.genre_encodings.shape}\n"
-        text += f"    genre_target: {self.genre_targets.shape}\n"
-        text += f"    output_groove: {self.output_grooves.shape}\n"
-        text += f"    idx: {self.output_grooves.shape}\n"
-        text += f"    ---------- Genre INFO ----------\n"
-        text += f"    genre_mapping: {self.genre_mapping}\n"
-        text += f"    num_genres: {self.num_genres}\n"
-        text += f"    genre_tags: {self.genre_tags}\n"
-        text += f"    -------- Complexity INFO -------\n"
-        text += f"    min_complexity: {self.min_complexity}\n"
-        text += f"    max_complexity: {self.max_complexity}\n"
-        text += f"    -------- HVO INFO -------\n"
-        text += f"    hvo_sequences: {len(self.hvo_sequences)}\n"
-        text += f"    -------------------------------------\n"
         return text
 
 
-
-    def get_hvo_sequences_at(self, idx):
-        return self.hvo_sequences[idx]
-
-    def get_inputs_at(self, idx):
-        return self.input_grooves[idx]
-
-    def get_outputs_at(self, idx):
-        return self.output_grooves[idx]
-
-    def get_genre_labels_for_all(self):
-        return [self.genre_tags[int(tg_val)] for tg_val in self.genre_targets.detach().cpu().numpy()]
-
-    def get_num_genres(self):
-        return self.num_genres
-
-    def get_genre_mapping(self):
-        return self.genre_mapping
-
-    def map_genre_to_one_hot(self, genre):
-        # check if lowercase version of genre matches lowercase version of genre in genre_mapping
-        for g in self.genre_mapping.keys():
-            if genre.lower() == g.lower():
-                return self.genre_mapping[g]
-
-        assert False, f"Genre {genre} not found in genre_mapping"
-
-    def get_genre_histogram(self):
-        genre_histogram = {genre: 0 for genre in self.genre_mapping.keys()}
-        for genre in self.genre_targets:
-            genre_histogram[self.genre_tags[int(genre.item())]] += 1
-        return genre_histogram
-
-    def get_complexities_per_genre(self):
-        '''
-        Returns the complexities per genre
-        :return:
-        '''
-
-        complexity_histogram_per_genre = {genre: [] for genre in self.genre_mapping.keys()}
-        complexity_histogram_per_genre["all"] = []
-
-        for idx, hvo_seq in enumerate(self.hvo_sequences):
-            genre = self.genre_targets[idx]
-            complexity_histogram_per_genre[self.genre_tags[int(genre.item())]].append(self.complexities[idx].item())
-
-        return complexity_histogram_per_genre
-
-    def get_tempos_per_genre(self):
-        '''
-        Returns the tempos per genre
-        :return:
-        '''
-
-        tempo_histogram_per_genre = {genre: [] for genre in self.genre_mapping.keys()}
-        tempo_histogram_per_genre["all"] = []
-
-        for idx, hvo_seq in enumerate(self.hvo_sequences):
-            genre = self.genre_targets[idx]
-            tempo_histogram_per_genre[self.genre_tags[int(genre.item())]].append(self.tempos[idx].item())
-            tempo_histogram_per_genre["all"].append(self.tempos[idx].item())
-
-        return tempo_histogram_per_genre
 
 if __name__ == "__main__":
     # tester
@@ -1561,30 +1476,26 @@ if __name__ == "__main__":
     #
     # =================================================================================================
     # Load Mega dataset as torch.utils.data.Dataset
-    from data import Groove2Drum2BarDataset
-
-    # load dataset as torch.utils.data.Dataset
-    training_dataset = Groove2Drum2BarDataset(
-        dataset_setting_json_path="data/dataset_json_settings/Imbalanced_RockDownSampled_performed.json",
-        subset_tag="train",
-        max_len=32,
-        tapped_voice_idx=2,
-        collapse_tapped_sequence=True,
-        num_voice_density_bins=3,
-        num_tempo_bins=6,
-        num_global_density_bins=7,
-        augment_dataset=False,
-        force_regenerate=False,
-        move_all_to_gpu=True
-    )
-    
-    from model import GenreGlobalDensityWithVoiceMutesVAE
+    from data import Groove2TripleStreams2BarDataset
 
     config = {
-        'd_model_enc': 128,
-        'd_model_dec': 128,
+        'dataset_setting_json_path': "data/dataset_json_settings/TripleStreams0_75_Accent.json",
+
+        'encoding_control1_key': "Flat Out Vs. Input | Hits | Hamming",
+        'encoding_control2_key': "Flat Out Vs. Input | Accent | Hamming",
+        'decoding_control1_key': "Stream 1 Vs. Flat Out | Hits | Hamming",
+        'decoding_control2_key': "Stream 2 Vs. Flat Out | Hits | Hamming",
+        'decoding_control3_key': "Stream 3 Vs. Flat Out | Hits | Hamming",
+
+        'n_encoding_control1_tokens': 33,
+        'n_encoding_control2_tokens': 10,
+        'n_decoding_control1_tokens': 12,
+        'n_decoding_control2_tokens': 12,
+        'n_decoding_control3_tokens': 12,
+
+        'd_model': 128,
         'embedding_size_src': 3,
-        'embedding_size_tgt': 27,
+        'embedding_size_tgt': 9,
         'nhead_enc': 4,
         'nhead_dec': 8,
         'dim_feedforward_enc': 128,
@@ -1593,38 +1504,60 @@ if __name__ == "__main__":
         'num_decoder_layers': 6,
         'dropout': 0.1,
         'latent_dim': 16,
-        'max_len_enc': 32,
-        'max_len_dec': 32,
+        'max_len': 32,
         'velocity_dropout': 0.1,
         'offset_dropout': 0.2,
-        'n_genres': 12,
-        'n_density_bins': 3,
-        'n_tempo_bins': 7,
-        'n_global_density_bins': 10,
-        'device': 'cuda'
+
+        'device': 'cpu'
     }
-    
-    model = GenreGlobalDensityWithVoiceMutesVAE(config).to('cuda')
-    
-    for i in range(10000):
+
+    # load dataset as torch.utils.data.Dataset
+    training_dataset = Groove2TripleStreams2BarDataset(
+        config=config,
+        subset_tag="train",
+        use_cached=True,
+        force_regenerate=False
+    )
+
+    from model import TripleStreamsVAE
+
+    '''
+    return (input_grooves,     
+                output_streams,     
+                flat_output_streams,           
+                encoding_control1_tokens,
+                encoding_control2_tokens,
+                decoding_control1_tokens,
+                decoding_control2_tokens,
+                decoding_control3_tokens,
+                tempos,
+                collection,
+                self.metadata
+                )
+                '''
+
+    model = TripleStreamsVAE(config)
+
+    import tqdm
+    for i in tqdm.trange(1000):
         start = i * 100
         end = (i + 1) * 100
-        inputs = training_dataset.input_grooves[start:end]
-        genre_tags = training_dataset.genre_targets[start:end]
-        global_density_bins = training_dataset.global_density_bins[start:end]
-        kick_is_muted = training_dataset.kick_is_muted[start:end]
-        snare_is_muted = training_dataset.snare_is_muted[start:end]
-        hat_is_muted = training_dataset.hat_is_muted[start:end]
-        tom_is_muted = training_dataset.tom_is_muted[start:end]
-        cymbal_is_muted = training_dataset.cymbal_is_muted[start:end]
+
+        batch_data = training_dataset[start:end]
+        input_grooves = batch_data[0]
+        output_streams = batch_data[1]
+        encoding_control1_tokens = batch_data[2]
+        encoding_control2_tokens = batch_data[3]
+        decoding_control1_tokens = batch_data[4]
+        decoding_control2_tokens = batch_data[5]
+        decoding_control3_tokens = batch_data[6]
+        indices = batch_data[7]
 
         model.forward(
-            flat_hvo_groove=inputs,
-            genre_tags=genre_tags,
-            global_density_bins=global_density_bins,
-            kick_is_muted=kick_is_muted,
-            snare_is_muted=snare_is_muted,
-            hat_is_muted=hat_is_muted,
-            cymbal_is_muted=cymbal_is_muted,
-            tom_is_muted=tom_is_muted,
+            flat_hvo_groove=input_grooves,
+            encoding_control1_token=encoding_control1_tokens,
+            encoding_control2_token=encoding_control2_tokens,
+            decoding_control1_token=decoding_control1_tokens,
+            decoding_control2_token=decoding_control2_tokens,
+            decoding_control3_token=decoding_control3_tokens,
         )

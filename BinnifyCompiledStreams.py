@@ -1,32 +1,111 @@
 import numpy as np
-import pandas as pd
-import math
-from typing import Iterable, Any, Dict, Tuple, List, Optional, Literal
-from CompileStreamsAndFeatures import *
-
+from typing import Any, Iterable, List, Dict, Tuple, Optional, Literal, Union
+from CompileStreamsAndFeatures import load_compiled_dataset_pkl_bz2
 
 def bin_y_within_percentiles(
-        x: Iterable[Any],
-        y: Iterable[float],
+        x: Optional[Iterable[Any]] = None,
+        y: Optional[Iterable[float]] = None,
+        data: Optional[Iterable[float]] = None,
         n_bins: int = 20,
         low_pct: float = 10.0,
         high_pct: float = 90.0,
-) -> Tuple[List[str or int], Dict[Any, Dict[str, Tuple[float, float]]]]:
+) -> Union[Tuple[List[str], Dict[Any, Dict[str, Tuple[float, float]]]],
+Tuple[List[str], Dict[str, Tuple[float, float]]]]:
     """
-    Bin y values within percentile bounds for each unique x value.
+    Bin y values within percentile bounds for each unique x value (2D case),
+    or bin data values within percentile bounds (1D case).
 
     Args:
-        x: Iterable of x values (any type)
-        y: Iterable of corresponding y values (float)
+        x: Iterable of x values (any type). If None, treats as 1D case.
+        y: Iterable of corresponding y values (float). Used in 2D case.
+        data: Iterable of values to bin (float). Used in 1D case when x is None.
         n_bins: Number of bins to create between percentile bounds
         low_pct: Lower percentile bound
         high_pct: Upper percentile bound
 
     Returns:
-        Tuple containing:
-        - List of binned y values as strings (bin labels) or -1 for NaN values
-        - Dictionary mapping x values to bin definitions
+        For 2D case (x and y provided):
+        - Tuple containing:
+            - List of binned y values as strings (bin labels) or -1 for NaN values
+            - Dictionary mapping x values to bin definitions
+
+        For 1D case (only data provided):
+        - Tuple containing:
+            - List of binned data values as strings (bin labels) or -1 for NaN values
+            - Dictionary with bin definitions (single set of bins)
     """
+    # Determine if this is 1D or 2D case
+    if x is None:
+        if data is None:
+            raise ValueError("Either provide (x, y) for 2D binning or (data) for 1D binning")
+        return _bin_1d(data, n_bins, low_pct, high_pct)
+    else:
+        if y is None:
+            raise ValueError("If x is provided, y must also be provided")
+        return _bin_2d(x, y, n_bins, low_pct, high_pct)
+
+
+def _bin_1d(
+        data: Iterable[float],
+        n_bins: int,
+        low_pct: float,
+        high_pct: float,
+) -> Tuple[List[str], Dict[str, Tuple[float, float]]]:
+    """Handle 1D binning case."""
+    data_list = list(data)
+
+    # Filter out NaN values for binning calculations
+    valid_data = [d for d in data_list if not (np.isnan(d) if isinstance(d, (int, float, np.number)) else False)]
+
+    if len(valid_data) == 0:
+        # No valid data - return all -1s and empty bin definitions
+        return [-1] * len(data_list), {}
+
+    # Calculate percentile bounds
+    data_array = np.array(valid_data)
+    low_bound = np.percentile(data_array, low_pct)
+    high_bound = np.percentile(data_array, high_pct)
+
+    # Create bin edges
+    bin_edges = np.linspace(low_bound, high_bound, n_bins + 1)
+
+    # Create bin definitions
+    bin_definitions = {}
+    for i in range(n_bins):
+        bin_name = f"bin_{i}"
+        bin_definitions[bin_name] = (bin_edges[i], bin_edges[i + 1])
+
+    # Bin each data value
+    binned_data = []
+    for d in data_list:
+        # Check if data is NaN
+        if np.isnan(d) if isinstance(d, (int, float, np.number)) else False:
+            binned_data.append(-1)
+            continue
+
+        # Determine which bin this value falls into
+        if d < low_bound:
+            bin_idx = 0  # Below range - assign to first bin
+        elif d >= high_bound:
+            bin_idx = n_bins - 1  # Above range - assign to last bin
+        else:
+            # Find appropriate bin
+            bin_idx = np.digitize(d, bin_edges) - 1
+            bin_idx = max(0, min(bin_idx, n_bins - 1))  # Clamp to valid range
+
+        binned_data.append(f"bin_{bin_idx}")
+
+    return binned_data, bin_definitions
+
+
+def _bin_2d(
+        x: Iterable[Any],
+        y: Iterable[float],
+        n_bins: int,
+        low_pct: float,
+        high_pct: float,
+) -> Tuple[List[str], Dict[Any, Dict[str, Tuple[float, float]]]]:
+    """Handle 2D binning case (original functionality)."""
     # Convert to lists for easier handling
     x_list = list(x)
     y_list = list(y)
@@ -102,19 +181,87 @@ def bin_y_within_percentiles(
     return binned_y, bin_definitions
 
 
-# ========= 2) Reusable mapper for new (x, y) =========
 def map_with_edges_dict(
-    edges_dict: Dict[Any, Dict[str, Tuple[float, float]]],
-    new_x: Iterable[Any],
-    new_y: Iterable[float],
-    on_unknown_x: Literal["error", "skip"] = "error",
+        edges_dict: Union[Dict[Any, Dict[str, Tuple[float, float]]], Dict[str, Tuple[float, float]]],
+        new_x: Optional[Iterable[Any]] = None,
+        new_y: Optional[Iterable[float]] = None,
+        new_data: Optional[Iterable[float]] = None,
+        on_unknown_x: Literal["error", "skip"] = "error",
 ) -> List[Optional[str]]:
     """
-    Map new (x, y) to bin labels using an edges_dict of the form:
-        {x: {"bin_0": (low, high), ..., "bin_{n-1}": (low, high)}}
+    Map new (x, y) to bin labels using an edges_dict (2D case),
+    or map new data to bin labels using bin definitions (1D case).
+
+    Args:
+        edges_dict:
+            For 2D case: {x: {"bin_0": (low, high), ..., "bin_{n-1}": (low, high)}}
+            For 1D case: {"bin_0": (low, high), ..., "bin_{n-1}": (low, high)}
+        new_x: New x values (for 2D case)
+        new_y: New y values (for 2D case)
+        new_data: New data values (for 1D case)
+        on_unknown_x: How to handle unknown x values ("error" or "skip")
+
+    Returns:
+        List of bin labels (strings) or None for invalid/unknown values
 
     Clipping rule: y < lowest -> bin_0 ; y > highest -> bin_{n-1}.
     """
+    # Determine if this is 1D or 2D case based on edges_dict structure
+    if not edges_dict:
+        return []
+
+    # Check if edges_dict has the 2D structure (nested dict) or 1D structure (flat dict)
+    first_key = next(iter(edges_dict))
+    is_2d_case = isinstance(edges_dict[first_key], dict)
+
+    if is_2d_case:
+        if new_x is None or new_y is None:
+            raise ValueError("For 2D edges_dict, both new_x and new_y must be provided")
+        return _map_2d(edges_dict, new_x, new_y, on_unknown_x)
+    else:
+        if new_data is None:
+            raise ValueError("For 1D edges_dict, new_data must be provided")
+        return _map_1d(edges_dict, new_data)
+
+
+def _map_1d(
+        edges_dict: Dict[str, Tuple[float, float]],
+        new_data: Iterable[float],
+) -> List[Optional[str]]:
+    """Handle 1D mapping case."""
+    data_list = list(map(float, new_data))
+
+    if not edges_dict:
+        return [None] * len(data_list)
+
+    # Infer n_bins from the dict keys
+    k_indices = sorted(int(k.split("_")[1]) for k in edges_dict.keys())
+    n_bins = (k_indices[-1] + 1) if k_indices else 1
+
+    # Rebuild edges array of length n_bins+1
+    lows = [edges_dict[f"bin_{k}"][0] for k in range(n_bins)]
+    highs = [edges_dict[f"bin_{k}"][1] for k in range(n_bins)]
+    edges = np.array([lows[0]] + highs, dtype=float)
+
+    out = []
+    for d in data_list:
+        if np.allclose(edges[0], edges[-1]):  # degenerate -> bin_0
+            out.append("bin_0")
+            continue
+
+        k = int(np.clip(np.searchsorted(edges, d, side="right") - 1, 0, n_bins - 1))
+        out.append(f"bin_{k}")
+
+    return out
+
+
+def _map_2d(
+        edges_dict: Dict[Any, Dict[str, Tuple[float, float]]],
+        new_x: Iterable[Any],
+        new_y: Iterable[float],
+        on_unknown_x: Literal["error", "skip"],
+) -> List[Optional[str]]:
+    """Handle 2D mapping case (original functionality)."""
     nx = list(new_x)
     ny = list(map(float, new_y))
     if len(nx) != len(ny):
@@ -150,229 +297,78 @@ def map_with_edges_dict(
     return out
 
 
-# ========= 3) Heatmap that adapts to any n_bins =========
-from bokeh.plotting import figure, show
-from bokeh.io import output_notebook
-from bokeh.models import ColumnDataSource, LinearColorMapper, ColorBar, PanTool, WheelZoomTool
-
-output_notebook()  # if you're in Jupyter
-
-def plot_bin_heatmap(
-    x_values,
-    bin_labels,
-    edges_dict: Optional[Dict[Any, Dict[str, Tuple[float, float]]]] = None,
-    title="X vs Bin Heatmap",
-):
+def TokenizeControls(
+        control_array: np.ndarray,
+        n_bins: int,
+        low: float = 0,
+        high: float = 1
+) -> np.ndarray:
     """
-    Heatmap of bin counts per X with:
-      - Only nonzero tiles drawn
-      - Only the single max-count cell shows text
-      - `bin_0` at the bottom
-      - Pan/wheel zoom/box zoom/reset/hover
+    Map control values to integer bin indices using uniform binning.
+
+    Args:
+        control_array: Numpy array of control values to bin
+        n_bins: Number of bins to create
+        low: Lower bound of binning range (default 0)
+        high: Upper bound of binning range (default 1)
+
+    Returns:
+        Numpy array of integer bin indices (0 to n_bins-1)
+
+    Example:
+        For n_bins=4, low=0, high=1:
+        - values < 0.25 → bin 0
+        - 0.25 ≤ values < 0.5 → bin 1
+        - 0.5 ≤ values < 0.75 → bin 2
+        - 0.75 ≤ values → bin 3
     """
-    df = pd.DataFrame({"x": x_values, "bin": bin_labels})
+    # Ensure scalar inputs
+    n_bins = int(n_bins)
+    low = float(low)
+    high = float(high)
 
-    # Infer n_bins from labels (robust if some bins unused)
-    try:
-        max_idx = df["bin"].str.extract(r"bin_(\d+)").astype(float).max().iloc[0]
-        n_bins = int(max_idx) + 1 if pd.notna(max_idx) else 1
-    except Exception:
-        n_bins = 1
-    bins = [f"bin_{i}" for i in range(n_bins)]
+    # Create bin edges
+    bin_edges = np.linspace(low, high, n_bins + 1)
 
-    # Numeric sort for x (0 at left)
-    def sort_key(v):
-        try:
-            f = float(v)
-            return (0, f) if math.isfinite(f) else (1, str(v))
-        except Exception:
-            return (1, str(v))
-    xs_unique = sorted(df["x"].unique(), key=sort_key)
+    # Use digitize to assign bins (subtract 1 to get 0-based indexing)
+    bin_indices = np.digitize(control_array, bin_edges) - 1
 
-    # Count and keep only >0 tiles
-    counts = df.groupby(["x", "bin"]).size().reset_index(name="count")
-    counts = counts[counts["count"] > 0].copy()
+    # Clamp to valid range [0, n_bins-1]
+    bin_indices = np.clip(bin_indices, 0, n_bins - 1)
 
-    if counts.empty:
-        p = figure(
-            x_range=[str(v) for v in xs_unique],
-            y_range=bins,  # bin_0 at bottom
-            title=title,
-            width=980, height=560,
-            tools="pan,wheel_zoom,box_zoom,reset,save",
-        )
-        p.xaxis.axis_label = "X"
-        p.yaxis.axis_label = "Bin"
-        show(p)
-        return
-
-    # Single max cell gets text
-    max_count = counts["count"].max()
-    counts["tile_text"] = ""
-    first_max_idx = counts.index[counts["count"] == max_count][0]
-    counts.loc[first_max_idx, "tile_text"] = str(int(max_count))
-
-    # Edges in hover (if provided)
-    lows, highs, texts = [], [], []
-    for vx, vbin in zip(counts["x"], counts["bin"]):
-        if edges_dict is not None and vx in edges_dict and vbin in edges_dict[vx]:
-            lo, hi = edges_dict[vx][vbin]
-            lows.append(lo); highs.append(hi)
-            texts.append(f"[{lo:.3g}, {hi:.3g}]" if not math.isclose(lo, hi) else f"{lo:.3g}")
-        else:
-            lows.append(float("nan")); highs.append(float("nan")); texts.append("")
-    counts["edge_low"] = lows
-    counts["edge_high"] = highs
-    counts["edge_text"] = texts
-
-    source = ColumnDataSource({
-        "x": counts["x"].astype(str),
-        "bin": counts["bin"],
-        "count": counts["count"],
-        "tile_text": counts["tile_text"],
-        "edge_low": counts["edge_low"],
-        "edge_high": counts["edge_high"],
-        "edge_text": counts["edge_text"],
-    })
-
-    x_factors = [str(v) for v in xs_unique]
-    y_factors = bins  # <- bin_0 at bottom
-
-    mapper = LinearColorMapper(palette="Viridis256", low=0, high=int(max_count))
-
-    tools = "pan,wheel_zoom,box_zoom,reset,save,hover"
-    p = figure(
-        x_range=x_factors,
-        y_range=y_factors,
-        x_axis_location="below",
-        width=980,
-        height=560,
-        title=title,
-        tools=tools,
-        tooltips=[
-            ("X", "@x"),
-            ("Bin", "@bin"),
-            ("Count", "@count"),
-            ("Edges", "@edge_text"),
-            ("Low", "@edge_low{0.###}"),
-            ("High", "@edge_high{0.###}"),
-        ],
-        output_backend="webgl",
-    )
-    p.toolbar.active_drag = p.select_one(PanTool)
-    p.toolbar.active_scroll = p.select_one(WheelZoomTool)
-
-    p.rect(
-        x="x", y="bin", width=1, height=1,
-        source=source,
-        fill_color={"field": "count", "transform": mapper},
-        line_color=None,
-    )
-
-    p.text(
-        x="x", y="bin", text="tile_text",
-        source=source,
-        text_align="center",
-        text_baseline="middle",
-        text_alpha=0.95,
-    )
-
-    p.add_layout(ColorBar(color_mapper=mapper, location=(0, 0)), "right")
-    p.xaxis.axis_label = "X"
-    p.yaxis.axis_label = "Bin"
-
-    show(p)
+    return bin_indices
 
 
+# Example usage:
 if __name__ == "__main__":
+    n_encoding_control1_tokens = 33                                         # 33 unique values 0., 0.03125, 0.0625, ..., 1.
+    encoding_control1_key = "Flat Out Vs. Input | Hits | Hamming"
+    n_encoding_control2_tokens = 10
+    encoding_control2_key = "Flat Out Vs. Input | Accent | Hamming"
+    n_decoding_control1_tokens = 12
+    decoding_control1_key = "Stream 1 Vs. Flat Out | Hits | Hamming"
+    n_decoding_control2_tokens = 12
+    decoding_control2_key = "Stream 2 Vs. Flat Out | Hits | Hamming"
+    n_decoding_control3_tokens = 12
+    decoding_control3_key = "Stream 3 Vs. Flat Out | Hits | Hamming"
+    
+    # dataset = load_compiled_dataset_pkl_bz2("data/triple_streams/cached/TestAccentAt0.75/training_splits/train.pkl.bz2")
 
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Compile datasets for triple streams.")
-    parser.add_argument("--accent_v_thresh", type=float, default=0.75, help="Accent velocity threshold for accent hits.")
-    parser.add_argument("--n_bins", type=int, default=10, help="Number of bins for the heatmap.")
-    parser.add_argument("--low_percentile", type=float, default=0.0, help="Low percentile for the heatmap.")
-    parser.add_argument("--high_percentile", type=float, default=0.9, help="High percentile for the heatmap.")
-    args = parser.parse_args()
-
-    # -------------------------
-    # Start Binning based on overal dataset
-    # -------------------------
-    print("STARTING THE BINNING PROCESS")
-
-    root_path = f"data/triple_streams/cached/AccentAt{args.accent_v_thresh}"
-    os.makedirs(root_path, exist_ok=True)
-    if not os.path.exists(root_path):
-        raise FileNotFoundError(f"The specified root path does not exist: {root_path} \n Make sure you have already ran >> python CompileStreamsAndFeatures.py --accent_v_thresh {args.accent_v_thresh} ")
+    control_ = np.round(dataset[encoding_control1_key][::6], 5)
+    hit_hamming_tokens = TokenizeControls(control_array=hit_hamming, n_bins=n_encoding_control1_tokens, low=0, high=1)
 
 
-    data_all = {}
-    for pkl in tqdm.tqdm(os.listdir(root_path)):
-        if pkl.endswith(".pkl.bz2"):
-            data = load_compiled_dataset_pkl_bz2(os.path.join(root_path, pkl))
-            for k, v in data.items():
-                if k not in data_all:
-                    data_all[k] = []
-                data_all[k].extend(v)
+    hit_hamming[:-10], hit_hamming_tokens[:-10]
 
-    x = data_all["Flat Out Vs. Input | Hits | Hamming"]
-    y = data_all["Flat Out Vs. Input | Accent | Hamming"]
-    y_normalized = data_all["Flat Out Vs. Input | Accent | Hamming Normalized"]
+    accent_hamming = np.round(dataset[encoding_control2_key][::6], 5)
+    accent_hamming_tokens = TokenizeControls(control_array=accent_hamming, n_bins=n_encoding_control2_tokens, low=0, high=0.85)
 
-    _, edges_dict = bin_y_within_percentiles(x, y, n_bins=args.n_bins, low_pct=args.low_percentile,
-                                             high_pct=args.high_percentile)
-    _, edges_dict_normalized = bin_y_within_percentiles(x, y_normalized, n_bins=args.n_bins, low_pct=args.low_percentile,
-                                                        high_pct=args.high_percentile)
+    stream1_hamming = np.round(dataset[decoding_control1_key][::6], 5)
+    stream1_hamming_tokens = TokenizeControls(control_array=stream1_hamming, n_bins=n_decoding_control1_tokens, low=0, high=0.85)
+    stream2_hamming = np.round(dataset[decoding_control2_key][::6], 5)
+    stream2_hamming_tokens = TokenizeControls(control_array=stream2_hamming, n_bins=n_decoding_control2_tokens, low=0, high=0.85)
+    stream3_hamming = np.round(dataset[decoding_control3_key][::6], 5)
+    stream3_hamming_tokens = TokenizeControls(control_array=stream3_hamming, n_bins=n_decoding_control3_tokens, low=0, high=0.85)
 
-    # Save the edges_dict to a file
-    new_save_folder = root_path + "_with_" + str(args.n_bins) + "_bins_in_" + str(args.low_percentile) + "_" + str(args.high_percentile) + "_percentile"
-    os.makedirs(new_save_folder, exist_ok=True)
-
-    edges_dict_path = os.path.join(new_save_folder,
-                                   f"edges_dict_{args.n_bins}_bins_{args.low_percentile}_{args.high_percentile}.pkl.bz2")
-    with bz2.BZ2File(edges_dict_path, 'wb') as f:
-        pickle.dump(edges_dict, f)
-
-    print(f"Edges dict saved at: {edges_dict_path}")
-
-    edges_dict_normalized_path = os.path.join(new_save_folder,
-                                              f"edges_dict_normalized_{args.n_bins}_bins_{args.low_percentile}_{args.high_percentile}.pkl.bz2")
-    with bz2.BZ2File(edges_dict_normalized_path, 'wb') as f:
-        pickle.dump(edges_dict_normalized, f)
-
-    print(f"Edges normalized dict saved at: {edges_dict_normalized_path}")
-
-    del data_all
-
-    # -------------------------
-    # Open all pkls again and binnify "Flat Out Vs. Input | Accent | Hamming", "Flat Out Vs. Input | Accent | Hamming Normalized"
-    # using map_with_edges_dict(edges_dict, x, y, on_unknown_x="error")
-    print("STARTING THE MAPPING PROCESS")
-    os.makedirs(new_save_folder, exist_ok=True)
-
-    for pkl in tqdm.tqdm(os.listdir(root_path)):
-        if pkl.endswith(".pkl.bz2"):
-            data = load_compiled_dataset_pkl_bz2(os.path.join(root_path, pkl))
-            y = data["Flat Out Vs. Input | Accent | Hamming"]
-            y_normalized = data["Flat Out Vs. Input | Accent | Hamming Normalized"]
-            x = data["Flat Out Vs. Input | Hits | Hamming"]
-
-            # Map the y values to bins using the edges_dict
-            mapped_y = map_with_edges_dict(edges_dict, x, y, on_unknown_x="error")
-            mapped_y_normalized = map_with_edges_dict(edges_dict_normalized, x, y_normalized, on_unknown_x="error")
-
-            # Update the data dictionary with the mapped values
-            data["Flat Out Vs. Input | Accent | Hamming (Binned)"] = mapped_y
-            data["Flat Out Vs. Input | Accent | Hamming Normalized (Binned)"] = mapped_y_normalized
-
-            # Save the updated data in a new directory appending with binning settings
-            compiled_data_path = os.path.join(new_save_folder, pkl)
-            with bz2.BZ2File(compiled_data_path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f"Updated data saved at: {compiled_data_path}")
-
-    print("Binning process completed for all datasets.")
-    print("Accessing the binned data:")
-
-    print("All datasets have been compiled and processed successfully.")
+    np.unique(stream1_hamming, return_counts=True)
 
