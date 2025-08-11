@@ -348,11 +348,32 @@ def Jaccard_similarity(a, b):
     union = np.sum(np.maximum(a, b))
     return (intersection / union)
 
+def get_timesteps_where_either_is_1(a, b):
+    """
+    Get indices where either a or b is 1.
+    """
+    return np.where((a == 1) | (b == 1))[0]
 
-def hamming_distance(a, b):
+
+def n_steps_with_either_hit(a, b):
+    """
+    Get num steps where either a or b has a hit.
+    """
+    return (np.where((a == 1) | (b == 1))[0]).shape[0]
+
+def hamming_distance(a, b, normalize=False):
+    # normalize false divides by len(a),
+    # otherwise, max edit uses num steps where either has a hit
     if len(a) != len(b):
         raise ValueError("Sequences must be of equal length")
-    return sum(x != y for x, y in zip(a, b)) / len(a)
+
+    different_bits = sum(x != y for x, y in zip(a, b))
+
+    if not normalize:
+        return different_bits / len(a)
+    else:
+        n_hit_steps = n_steps_with_either_hit(a, b)
+        return different_bits / n_hit_steps if n_hit_steps > 0 else 0.0
 
 
 from hvo_sequence.utils import fuzzy_Hamming_distance

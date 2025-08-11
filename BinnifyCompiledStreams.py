@@ -4,74 +4,102 @@ import math
 from typing import Iterable, Any, Dict, Tuple, List, Optional, Literal
 from CompileStreamsAndFeatures import *
 
-# ========= 1) Fit + label + return dict =========
+
 def bin_y_within_percentiles(
-    x: Iterable[Any],
-    y: Iterable[float],
-    n_bins: int = 20,
-    low_pct: float = 10.0,
-    high_pct: float = 90.0,
-) -> Tuple[List[str], Dict[Any, Dict[str, Tuple[float, float]]]]:
+        x: Iterable[Any],
+        y: Iterable[float],
+        n_bins: int = 20,
+        low_pct: float = 10.0,
+        high_pct: float = 90.0,
+) -> Tuple[List[str or int], Dict[Any, Dict[str, Tuple[float, float]]]]:
     """
-    For each unique x:
-      - Compute [low_pct, high_pct] bounds of y
-      - Create `n_bins` equal-width bins within those bounds
-      - Assign each y to bin_0..bin_{n_bins-1} (clipped below/above)
+    Bin y values within percentile bounds for each unique x value.
 
-    Returns
-    -------
-    labels : list[str]
-        Per-row labels, e.g. "bin_0"..."bin_{n_bins-1}"
-    edges_dict : dict
-        {x: {"bin_0": (low, high), ..., f"bin_{n_bins-1}": (low, high)}}
+    Args:
+        x: Iterable of x values (any type)
+        y: Iterable of corresponding y values (float)
+        n_bins: Number of bins to create between percentile bounds
+        low_pct: Lower percentile bound
+        high_pct: Upper percentile bound
+
+    Returns:
+        Tuple containing:
+        - List of binned y values as strings (bin labels) or -1 for NaN values
+        - Dictionary mapping x values to bin definitions
     """
-    if not (0 <= low_pct < high_pct <= 100):
-        raise ValueError("Require 0 <= low_pct < high_pct <= 100.")
-    if n_bins < 1:
-        raise ValueError("n_bins must be >= 1.")
+    # Convert to lists for easier handling
+    x_list = list(x)
+    y_list = list(y)
 
-    x = np.asarray(list(x))
-    y = np.asarray(list(y), dtype=float)
-    if x.shape[0] != y.shape[0]:
-        raise ValueError("x and y must have the same length.")
+    # Group y values by unique x values, excluding NaN values for binning calculations
+    x_to_y = {}
+    for xi, yi in zip(x_list, y_list):
+        if xi not in x_to_y:
+            x_to_y[xi] = []
+        # Only add non-NaN values for binning calculations
+        if not (np.isnan(yi) if isinstance(yi, (int, float, np.number)) else False):
+            x_to_y[xi].append(yi)
 
-    labels: List[str] = [None] * len(x)  # type: ignore
-    edges_dict: Dict[Any, Dict[str, Tuple[float, float]]] = {}
-    uniq_x = np.unique(x)
+    # Result containers
+    binned_y = []
+    bin_definitions = {}
 
-    for ux in uniq_x:
-        mask = (x == ux)
-        y_grp = y[mask]
+    # First, create bin definitions for each unique x (using only non-NaN values)
+    for xi in set(x_list):
+        # Get all non-NaN y values for this x
+        y_vals = np.array(x_to_y[xi])
 
-        if y_grp.size == 0 or np.all(np.isnan(y_grp)):
-            # No info: flat edges
-            med = 0.0
-            edges = np.array([med] * (n_bins + 1), float)
+        # Skip if no valid y values for this x
+        if len(y_vals) == 0:
+            bin_definitions[xi] = {}
+            continue
+
+        # Calculate percentile bounds
+        low_bound = np.percentile(y_vals, low_pct)
+        high_bound = np.percentile(y_vals, high_pct)
+
+        # Create bin edges
+        bin_edges = np.linspace(low_bound, high_bound, n_bins + 1)
+
+        # Create bin definitions dictionary for this x
+        bin_defs = {}
+        for i in range(n_bins):
+            bin_name = f"bin_{i}"
+            bin_defs[bin_name] = (bin_edges[i], bin_edges[i + 1])
+
+        bin_definitions[xi] = bin_defs
+
+    # Now bin each y value based on its corresponding x
+    for i, (xi, yi) in enumerate(zip(x_list, y_list)):
+        # Check if y is NaN
+        if np.isnan(yi) if isinstance(yi, (int, float, np.number)) else False:
+            binned_y.append(-1)
+            continue
+
+        # Check if this x has any valid y values for binning
+        if len(x_to_y[xi]) == 0:
+            binned_y.append(-1)
+            continue
+
+        # Get bin edges for this x
+        y_vals = np.array(x_to_y[xi])
+        low_bound = np.percentile(y_vals, low_pct)
+        high_bound = np.percentile(y_vals, high_pct)
+        bin_edges = np.linspace(low_bound, high_bound, n_bins + 1)
+
+        # Determine which bin this y value falls into
+        if yi < low_bound:
+            bin_idx = 0  # Below range - assign to first bin
+        elif yi >= high_bound:
+            bin_idx = n_bins - 1  # Above range - assign to last bin
         else:
-            lo, hi = np.nanpercentile(y_grp, [low_pct, high_pct])
-            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-                med = float(np.nanmedian(y_grp)) if np.isfinite(np.nanmedian(y_grp)) else 0.0
-                edges = np.array([med] * (n_bins + 1), float)
-            else:
-                edges = np.linspace(lo, hi, n_bins + 1)
+            # Find appropriate bin
+            bin_idx = np.digitize(yi, bin_edges) - 1
+            bin_idx = max(0, min(bin_idx, n_bins - 1))  # Clamp to valid range
 
-        # Build {bin_k: (low, high)}
-        edges_dict[ux] = {f"bin_{k}": (float(edges[k]), float(edges[k+1])) for k in range(n_bins)}
+        binned_y.append(f"bin_{bin_idx}")
 
-        # Assign labels with clipping
-        # Reuse edges array; searchsorted gives bin index, then clip to [0, n_bins-1]
-        idx = np.searchsorted(edges, y_grp, side="right") - 1
-        idx = np.clip(idx, 0, n_bins - 1)
-        grp_labels = [f"bin_{int(k)}" for k in idx]
-
-        # write back in-place
-        j = 0
-        for i, m in enumerate(mask):
-            if m:
-                labels[i] = grp_labels[j]
-                j += 1
-
-    return labels, edges_dict
+    return binned_y, bin_definitions
 
 
 # ========= 2) Reusable mapper for new (x, y) =========
@@ -272,7 +300,7 @@ if __name__ == "__main__":
     # -------------------------
     print("STARTING THE BINNING PROCESS")
 
-    root_path = f"data/triple_streams/cached/CompiledUsingAccentThreshOf{args.accent_v_thresh}"
+    root_path = f"data/triple_streams/cached/AccentAt{args.accent_v_thresh}"
     os.makedirs(root_path, exist_ok=True)
     if not os.path.exists(root_path):
         raise FileNotFoundError(f"The specified root path does not exist: {root_path} \n Make sure you have already ran >> python CompileStreamsAndFeatures.py --accent_v_thresh {args.accent_v_thresh} ")
