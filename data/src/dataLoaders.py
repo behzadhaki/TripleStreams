@@ -1334,7 +1334,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
             f"_{self.n_decoding_control2_tokens}_{self.decoding_control2_key}" \
             f"_{self.n_decoding_control3_tokens}_{self.decoding_control3_key}"
 
-            filename = hash_string_to_name(filename) + ".bz2pickle"
+            filename = filename + ".bz2pickle"
             if not os.path.exists(dir_):
                 os.makedirs(dir_)
             return os.path.join(dir_, filename)
@@ -1369,7 +1369,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
             # load pre-stored hvo_sequences or
             #   a portion of them uniformly sampled if down_sampled_ratio is provided
             # ------------------------------------------------------------------------------------------
-            dataLoaderLogger.info("\n\n LOADING THE DICTIONARY CONTAINING RAW DATA")
+            print("++++++++++++++++++ Need to process data from Scratch")
             loaded_data_dictionary = load_pkl_bz2_dict(get_source_compiled_data_dictionary_path(), allow_pickle_arrays=True)
             n_samples = len(loaded_data_dictionary["metadata"])
             
@@ -1443,7 +1443,6 @@ class Groove2TripleStreams2BarDataset(Dataset):
 
         # Conver to tensors (patterns as float32 and controls as long)
         # ------------------------------------------------------------------------------------------
-        print("CONVERTING TO TENSORS END OF CONSTRUCTOR ")
         self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
         self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
         self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)

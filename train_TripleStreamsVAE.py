@@ -349,6 +349,9 @@ if __name__ == "__main__":
         # Run the training loop (trains per batch internally)
         # ------------------------------------------------------------------------------------------
         model_on_device.train()
+        
+        print("\n\n\n\n")
+
 
         logger.info("***************************Training...")
 
@@ -381,6 +384,9 @@ if __name__ == "__main__":
         # ---------------------------------------------------------------------------------------------------
         model_on_device.eval()  # DON'T FORGET TO SET THE MODEL TO EVAL MODE (check torch no grad)
 
+        print("\n\n\n\n")
+
+
         logger.info("***************************Testing...")
 
         test_log_metrics = train_utils.test_loop(
@@ -404,19 +410,67 @@ if __name__ == "__main__":
             f"Epoch {epoch} Finished with total train loss of {train_log_metrics['Loss_Criteria/loss_total_rec_w_kl_train']} "
             f"and test loss of {test_log_metrics['Loss_Criteria/loss_total_rec_w_kl_test']}")
 
+        # Get Hit Scores for the entire train and the entire test set
+        # ---------------------------------------------------------------------------------------------------
+        
+        if args.calculate_hit_scores_on_train:
+            if epoch % args.hit_score_frequency == 0:
+                print("\n\n\n\n")
+
+
+                logger.info("________Calculating Hit Scores on Train Set...")
+                train_set_hit_scores, previous_evaluator_for_hit_scores_train = eval_utils.get_hit_scores(
+                    config=config,
+                    subset_tag='train',
+                    use_cached=True,
+                    downsampled_size=3000,
+                    predict_using_batch_data_method=predict_using_batch_data,
+                    tag_key="collection",
+                    cached_folder="cached/GrooveEvaluator/templates/HitScores",
+                    divide_by_collection=False,
+                    previous_evaluator=previous_evaluator_for_hit_scores_train
+                )
+                wandb.log(train_set_hit_scores, commit=False)
+
+                print(previous_evaluator_for_hit_scores_train.dataset.metadata[0], "\n", previous_evaluator_for_hit_scores_train.dataset.metadata[-1])
+
+            if args.calculate_hit_scores_on_test:
+                print("\n\n\n\n")
+
+
+                logger.info("________Calculating Hit Scores on Test Set...")
+                test_set_hit_scores, previous_evaluator_for_hit_scores_test = eval_utils.get_hit_scores(
+                    config=config,
+                    subset_tag='test',
+                    use_cached=True,
+                    downsampled_size=3000,
+                    predict_using_batch_data_method=predict_using_batch_data,
+                    tag_key="collection",
+                    cached_folder="cached/GrooveEvaluator/templates/HitScores",
+                    divide_by_collection=False,
+                    previous_evaluator=previous_evaluator_for_hit_scores_train
+
+                )
+
+                wandb.log(test_set_hit_scores, commit=False)
+                print(previous_evaluator_for_hit_scores_test.dataset.metadata[0], "\n", previous_evaluator_for_hit_scores_train.dataset.metadata[-1])
+
         # Generate PianoRolls and UMAP Plots  and KL/OA PLots if Needed
         # ---------------------------------------------------------------------------------------------------
         if args.piano_roll_samples:
             if epoch % args.piano_roll_frequency == 0:
+                print("\n\n\n\n")
+
+
                 logger.info("________Generating PianoRolls...")
                 media, previous_evaluator_for_piano_rolls = eval_utils.get_pianoroll_for_wandb(
                     config=config,
                     subset_tag='test',
-                    use_cached=False,
+                    use_cached=True,
                     downsampled_size=100,
                     predict_using_batch_data_method=predict_using_batch_data,
                     tag_key="collection",
-                    cached_folder="cached/GrooveEvaluator/templates",
+                    cached_folder="cached/GrooveEvaluator/templates/PRolls",
                     divide_by_collection=True,
                     previous_evaluator=previous_evaluator_for_piano_rolls,
                     need_piano_roll=True,
@@ -424,21 +478,25 @@ if __name__ == "__main__":
                     need_audio=False
                 )
                 wandb.log(media, commit=False)
+                print(previous_evaluator_for_piano_rolls.dataset.metadata[0], "\n", previous_evaluator_for_hit_scores_train.dataset.metadata[-1])
 
-                # umap
-                logger.info("________Generating UMAP...")
-                media, previous_loaded_dataset_for_umap_test = eval_utils.generate_umap_for_wandb(
-                    config=config,
-                    subset_tag='test',
-                    predict_using_batch_data_method=predict_using_batch_data,
-                    use_cached=True, # set to false, to use new samples each time
-                    downsampled_size=1000,   # use only 1000 random samples for the umap
-                    tag_key="collection",    # visualize (color) based on collection
-                    previous_loaded_dataset=previous_loaded_dataset_for_umap_test
-                )
-                if media is not None:
-                    wandb.log(media, commit=False)
-
+                # # umap
+                # logger.info("________Generating UMAP...")
+                # print("\n\n\n\n")
+                #
+                #
+                # media, previous_loaded_dataset_for_umap_test = eval_utils.generate_umap_for_wandb(
+                #     config=config,
+                #     subset_tag='test',
+                #     predict_using_batch_data_method=predict_using_batch_data,
+                #     use_cached=True, # set to false, to use new samples each time
+                #     downsampled_size=1000,   # use only 1000 random samples for the umap
+                #     tag_key="collection",    # visualize (color) based on collection
+                #     previous_loaded_dataset=previous_loaded_dataset_for_umap_test
+                # )
+                # if media is not None:
+                #     wandb.log(media, commit=False)
+                #
                 # media, previous_loaded_dataset_for_umap_train = eval_utils.generate_umap_for_wandb(
                 #     predict_using_batch_data=predict_using_batch_data,
                 #     dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
@@ -449,35 +507,7 @@ if __name__ == "__main__":
                 # if media is not None:
                 #     wandb.log(media, commit=False)
 
-        # Get Hit Scores for the entire train and the entire test set
-        # ---------------------------------------------------------------------------------------------------
-        if args.calculate_hit_scores_on_train:
-            if epoch % args.hit_score_frequency == 0:
-                logger.info("________Calculating Hit Scores on Train Set...")
-                train_set_hit_scores, previous_evaluator_for_hit_scores_train = eval_utils.get_hit_scores(
-                    predict_using_batch_data=predict_using_batch_data,
-                    dataset_setting_json_path=f"{config.dataset_setting_json_path}",
-                    subset_name='train',
-                    down_sampled_ratio=None,
-                    cached_folder="cached/GrooveEvaluator/templates",
-                    previous_evaluator=previous_evaluator_for_hit_scores_train,
-                    divide_by_genre=False
-                )
-                wandb.log(train_set_hit_scores, commit=False)
-
-        if args.calculate_hit_scores_on_test:
-            logger.info("________Calculating Hit Scores on Test Set...")
-            test_set_hit_scores, previous_evaluator_for_hit_scores_test = eval_utils.get_hit_scores(
-                predict_using_batch_data=predict_using_batch_data,
-                dataset_setting_json_path=f"{dataset_setting_json_path}",
-                subset_name=args.evaluate_on_subset,
-                down_sampled_ratio=None,
-                cached_folder="cached/GrooveEvaluator/templates",
-                previous_evaluator=previous_evaluator_for_hit_scores_test,
-                divide_by_genre=False,
-
-            )
-            wandb.log(test_set_hit_scores, commit=False)
+        
 
         # Commit the metrics to wandb
         # ---------------------------------------------------------------------------------------------------

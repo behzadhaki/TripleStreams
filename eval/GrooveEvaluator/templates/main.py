@@ -180,15 +180,17 @@ def compile_into_list_of_hvo_seqs(output_hvos, metadatas, input_hvos=None, qpms=
         temp_hvo_seq.add_time_signature(0, 4, 4)
         temp_hvo_seq.adjust_length(output_hvo.shape[0])
 
+        g_dim_shift = 0
         if input_hvo is not None:
             temp_hvo_seq.hvo[:, 0] = input_hvo[:, 0]  # groove hit
             temp_hvo_seq.hvo[:, n_overall_voices] = input_hvo[:, 1]  # groove vel
             temp_hvo_seq.hvo[:, n_overall_voices * 2] = input_hvo[:, 2]  # groove offset
+            g_dim_shift = 1
 
         for i in range(n_outputs_voices):
-            temp_hvo_seq.hvo[:, 1 + i] = output_hvo[:, i]  # stream hit
-            temp_hvo_seq.hvo[:, 1 + n_overall_voices + i] = output_hvo[:, i + n_outputs_voices]  # stream vel
-            temp_hvo_seq.hvo[:, 1 + n_overall_voices * 2 + i] = output_hvo[:, i + 2 * n_outputs_voices]  # stream offset
+            temp_hvo_seq.hvo[:, g_dim_shift + i] = output_hvo[:, i]  # stream hit
+            temp_hvo_seq.hvo[:, g_dim_shift + n_overall_voices + i] = output_hvo[:, i + n_outputs_voices]  # stream vel
+            temp_hvo_seq.hvo[:, g_dim_shift + n_overall_voices * 2 + i] = output_hvo[:, i + 2 * n_outputs_voices]  # stream offset
 
         temp_hvo_seq.metadata.update(metadata)
         hvo_sequence_list.append(temp_hvo_seq)
@@ -196,7 +198,7 @@ def compile_into_list_of_hvo_seqs(output_hvos, metadatas, input_hvos=None, qpms=
     return hvo_sequence_list
 
 def create_triple_streams_template(dataset, identifier,
-                                   cached_folder="cached/Evaluators/templates/",
+                                   cached_folder,
                                    divide_by_collection=True,
                                    use_input_in_hvo_sequences=False):
     """
@@ -267,8 +269,8 @@ def load_triple_streams_evaluator_template(
         config,
         subset_tag,
         use_input_in_hvo_sequences,
+        cached_folder,
         downsampled_size=None,
-        cached_folder="cached/Evaluators/templates/",
         use_cached=False,
         divide_by_collection=True,
         disable_logging=True,):
@@ -290,7 +292,8 @@ def load_triple_streams_evaluator_template(
     path = os.path.join(cached_folder, f"{_identifier}_evaluator.Eval.bz2")
     print (path)
 
-    if os.path.exists(path):
+    if os.path.exists(path) and use_cached:
+        print(f"\n\n\n============= Using cached evaluator at {path}")
         if not disable_logging:
             logger.info(f"Loading template from {path}")
         eval = load_evaluator(path)
@@ -300,6 +303,7 @@ def load_triple_streams_evaluator_template(
             subset_tag=subset_tag,
             use_cached=use_cached,
             downsampled_size=downsampled_size,
+            force_regenerate=False
         )
 
         eval.dataset = test_dataset

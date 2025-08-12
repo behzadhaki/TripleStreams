@@ -89,7 +89,7 @@ def generate_umap_for_wandb(
             config=config,
             subset_tag=subset_tag,
             use_cached=use_cached,
-            downsampled_size=downsampled_size,
+            downsampled_size=downsampled_size
             )
     else:
         test_dataset = previous_loaded_dataset
@@ -113,8 +113,7 @@ def generate_umap_for_wandb(
     latents_z = None
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc="Generating UMAP"):
         _, z = predict_using_batch_data(batch_data=batch_data)
-
-        tags_used.extend([tags_all[ix] for ix in batch_data[-1]])
+        tags_used.extend(batch_data[-1]['collection'])
 
         if latents_z is None:
             latents_z = z.detach().cpu().numpy()
@@ -144,7 +143,7 @@ def get_pianoroll_for_wandb(
         predict_using_batch_data_method=None,
         tag_key="collection",
         previous_loaded_dataset=None,
-        cached_folder="cached/Evaluators/templates/",
+        cached_folder="cached/Evaluators/templates/PRolls",
         divide_by_collection=True,   # use collection instead
         previous_evaluator=None,
         **kwargs):
@@ -178,13 +177,29 @@ def get_pianoroll_for_wandb(
             divide_by_collection=divide_by_collection,
             use_input_in_hvo_sequences=True
         )
-    batch_data = evaluator.dataset[:]
-    metadatas = batch_data[-1]
-    full_midi_filenames = [mtd["full_midi_filename"] for mtd in metadatas]
+
+    dataloader = torch.utils.data.DataLoader(
+        evaluator.dataset,
+        batch_size=128,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+        pin_memory=False,
+    )
+
+    predictions = []
+    full_midi_filenames = []
+
     predict_using_batch_data = predict_using_batch_data_method if predict_using_batch_data_method is not None \
         else predict_using_batch_data
-    hvos_array, _ = predict_using_batch_data(batch_data=batch_data)
-    hvos_array = stack_groove_with_outputs(input_hvos=batch_data[0], output_hvos=hvos_array)
+
+    for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader),
+                                          desc=f"Generating Hit Scores - {subset_tag}"):
+        hvos_array, latent_z = predict_using_batch_data(batch_data=batch_data)
+        hvos_array = stack_groove_with_outputs(input_hvos=batch_data[0], output_hvos=hvos_array)
+        predictions.append(hvos_array.detach().cpu().numpy())
+        full_midi_filenames.extend(batch_data[-1]['full_midi_filename'])
+
     evaluator.add_unsorted_predictions(
         hvos_array.detach().cpu().numpy(),
         prediction_full_midi_filenames=full_midi_filenames,
@@ -211,11 +226,19 @@ def get_pianoroll_for_wandb(
 
 
 def get_hit_scores(
-        predict_using_batch_data, dataset_setting_json_path, subset_tag,
-        down_sampled_ratio,
-        cached_folder="cached/Evaluators/templates/",
-        previous_evaluator=None,
-        divide_by_genre=True):
+        config,
+        subset_tag,
+        use_cached,
+        downsampled_size,
+        predict_using_batch_data_method=None,
+        tag_key="collection",
+        previous_loaded_dataset=None,
+        cached_folder="cached/Evaluators/templates/HitScores",
+        divide_by_collection=True,   # use collection instead
+        previous_evaluator=None):
+
+    predict_using_batch_data = predict_using_batch_data_method if predict_using_batch_data_method is not None \
+        else predict_using_batch_data
 
     # logger.info("Generating the hit scores for subset: {}".format(subset_tag))
     # and model is correct type
@@ -226,20 +249,15 @@ def get_hit_scores(
         evaluator = previous_evaluator
     else:
         # load the evaluator template (or create a new one if it does not exist)
-        evaluator = load_evaluator_template(
-            dataset_setting_json_path=dataset_setting_json_path,
+        evaluator = load_triple_streams_evaluator_template(
+            config=config,
             subset_tag=subset_tag,
-            down_sampled_ratio=down_sampled_ratio,
+            downsampled_size=downsampled_size,
             cached_folder=cached_folder,
-            divide_by_genre=divide_by_genre
+            use_cached=use_cached,
+            divide_by_collection=divide_by_collection,
+            use_input_in_hvo_sequences=False                    # <------ Must be False here: True will result in higher values when set to false (because we dont predict groove, just predicting streams)
         )
-
-    print(f"evaluator = load_evaluator_template("
-          f"dataset_setting_json_path={dataset_setting_json_path},"
-          f"subset_tag={subset_tag},"
-          f"down_sampled_ratio={down_sampled_ratio},"
-          f"cached_folder={cached_folder},"
-          f"divide_by_genre={divide_by_genre}")
 
     # (1) Get the targets, (2) tapify and pass to the model (3) add the predictions to the evaluator
     # ------------------------------------------------------------------------------------------
@@ -250,13 +268,13 @@ def get_hit_scores(
     )
 
     predictions = []
-
+    full_midi_filenames = []
 
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Generating Hit Scores - {subset_tag}"):
         hvos_array, latent_z = predict_using_batch_data(batch_data=batch_data)
         predictions.append(hvos_array.detach().cpu().numpy())
+        full_midi_filenames.extend(batch_data[-1]['full_midi_filename'])
 
-    full_midi_filenames = [hvo_seq.metadata["full_midi_filename"] for hvo_seq in evaluator.dataset.hvo_sequences]
     evaluator.add_unsorted_predictions(np.concatenate(predictions), full_midi_filenames)
 
     hit_dict = evaluator.get_statistics_of_pos_neg_hit_scores()
