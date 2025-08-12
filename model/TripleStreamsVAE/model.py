@@ -16,8 +16,8 @@ class TripleStreamsVAE(torch.nn.Module):
         This is a VAE transformer which for encoder and decoder uses the same transformer architecture
         (that is, uses the Vanilla Transformer Encoder)
         :param config: a dictionary containing the following keys:
-            d_model: the dimension of the model for the encoder
-            d_model: the dimension of the model for the decoder
+            d_model_enc: the dimension of the model for the encoder
+            d_model_dec: the dimension of the model for the decoder
             embedding_size_src: the dimension of the input embedding
             embedding_size_tgt: the dimension of the output embedding
             nhead_enc: the number of heads for the encoder
@@ -49,7 +49,7 @@ class TripleStreamsVAE(torch.nn.Module):
         # ---------------------------------------------------
         self.InputLayerEncoder = InputGrooveLayerWithTwoControls(
             embedding_size=self.config['embedding_size_src'],
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_enc'],
             max_len=self.config['max_len'],
             velocity_dropout=float(self.config['velocity_dropout']),
             offset_dropout=float(self.config['offset_dropout']),
@@ -59,7 +59,7 @@ class TripleStreamsVAE(torch.nn.Module):
         )
 
         self.Encoder = Encoder(
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_enc'],
             nhead=self.config['nhead_enc'],
             dim_feedforward=self.config['dim_feedforward_enc'],
             num_encoder_layers=self.config['num_encoder_layers'],
@@ -68,21 +68,21 @@ class TripleStreamsVAE(torch.nn.Module):
 
         self.latentLayer = LatentLayer(
             max_len=self.config['max_len'],
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_enc'],
             latent_dim=self.config['latent_dim']
         )
 
         self.HitsDecoderInput = DecoderInput(
             max_len=self.config['max_len'],
             latent_dim=self.config['latent_dim'],
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
             n_decoding_control1_tokens=self.config['n_decoding_control1_tokens'],
             n_decoding_control2_tokens=self.config['n_decoding_control2_tokens'],
             n_decoding_control3_tokens=self.config['n_decoding_control3_tokens'],
         )
 
         self.HitsDecoder = Encoder(
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
             nhead=self.config['nhead_dec'],
             dim_feedforward=self.config['dim_feedforward_dec'],
             num_encoder_layers=self.config['num_decoder_layers'],
@@ -91,20 +91,20 @@ class TripleStreamsVAE(torch.nn.Module):
 
         self.HitsOutputLayer = SingleFeatureOutputLayer(
             embedding_size=self.config['embedding_size_tgt'] // 3,
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
         )
         
         self.velocityDecoderInput = DecoderInput(
             max_len=self.config['max_len'],
             latent_dim=self.config['latent_dim'],
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
             n_decoding_control1_tokens=self.config['n_decoding_control1_tokens'],
             n_decoding_control2_tokens=self.config['n_decoding_control2_tokens'],
             n_decoding_control3_tokens=self.config['n_decoding_control3_tokens']
         )
         
         self.VelocityDecoder = Encoder(
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
             nhead=self.config['nhead_dec'],
             dim_feedforward=self.config['dim_feedforward_dec'],
             num_encoder_layers=self.config['num_decoder_layers'],
@@ -113,20 +113,20 @@ class TripleStreamsVAE(torch.nn.Module):
 
         self.VelocityOutputLayer = SingleFeatureOutputLayer(
             embedding_size=self.config['embedding_size_tgt'] // 3,
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
         )
 
         self.OffsetDecoderInput = DecoderInput(
             max_len=self.config['max_len'],
             latent_dim=self.config['latent_dim'],
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
             n_decoding_control1_tokens=self.config['n_decoding_control1_tokens'],
             n_decoding_control2_tokens=self.config['n_decoding_control2_tokens'],
             n_decoding_control3_tokens=self.config['n_decoding_control3_tokens']
         )
         
         self.OffsetDecoder = Encoder(
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
             nhead=self.config['nhead_dec'],
             dim_feedforward=self.config['dim_feedforward_dec'],
             num_encoder_layers=self.config['num_decoder_layers'],
@@ -135,7 +135,7 @@ class TripleStreamsVAE(torch.nn.Module):
 
         self.OffsetOutputLayer = SingleFeatureOutputLayer(
             embedding_size=self.config['embedding_size_tgt'] // 3,
-            d_model=self.config['d_model'],
+            d_model=self.config['d_model_dec'],
         )
 
         self.init_weights(0.1)
@@ -172,13 +172,13 @@ class TripleStreamsVAE(torch.nn.Module):
                 mu:            [N, latent_dim]
                 log_var:       [N, latent_dim]
                 latent_z:      [N, latent_dim]
-                memory:        [N, 32, d_model]
+                memory:        [N, 32, d_model_enc]
 
         """
         x, hit, hvo_projection = self.InputLayerEncoder.forward(hvo=flat_hvo_groove,
                                                                 encoding_control1_token=encoding_control1_token,
                                                                 encoding_control2_token=encoding_control2_token)
-        memory = self.Encoder(x)  # N x (32+1) x d_model
+        memory = self.Encoder(x)  # N x (32+1) x d_model_enc
         mu, log_var, latent_z = self.latentLayer(memory)
         return mu, log_var, latent_z, memory
 
@@ -343,8 +343,8 @@ class TripleStreamsVAE(torch.nn.Module):
 
         h = torch.zeros_like(_h)
 
-        voice_thresholds = torch.tensor([threshold] * 9)
-        voice_max_count_allowed = torch.tensor([32] * 9)
+        voice_thresholds = torch.tensor([threshold] * 3)
+        voice_max_count_allowed = torch.tensor([32] * 3)
 
         for ix, (thres, max_count) in enumerate(zip(voice_thresholds, voice_max_count_allowed)):
             max_indices = torch.topk(_h[:, :, ix], max_count).indices[0]
@@ -399,7 +399,8 @@ class TripleStreamsVAE(torch.nn.Module):
 if __name__ == "__main__":
 
     config = {
-        'd_model': 128,
+        'd_model_enc': 128,
+        'd_model_dec': 128,
         'embedding_size_src': 3,
         'embedding_size_tgt': 9,
         'nhead_enc': 4,
@@ -445,5 +446,13 @@ if __name__ == "__main__":
         decoding_control2_token=decoding_control2_token,
         decoding_control3_token=decoding_control3_token
     )
-
+    
+    model.predict(
+        flat_hvo_groove=torch.rand(1, 32, config["embedding_size_src"]),
+        encoding_control1_token=encoding_control1_token,
+        encoding_control2_token=encoding_control2_token,
+        decoding_control1_token=decoding_control1_token,
+        decoding_control2_token=decoding_control2_token,
+        decoding_control3_token=decoding_control3_token
+    )
     model.serialize(save_folder='./')
