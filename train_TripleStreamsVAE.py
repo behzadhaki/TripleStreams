@@ -4,8 +4,9 @@ import wandb
 
 import torch
 from model import TripleStreamsVAE
-from helpers import train_utils, eval_utils
-from data.src.dataLoaders import Groove2Drum2BarDataset
+from helpers import train_utils
+from helpers import eval_utils_TripleStreams as eval_utils
+from data.src.dataLoaders import Groove2TripleStreams2BarDataset
 from torch.utils.data import DataLoader
 from logging import getLogger, DEBUG
 import yaml
@@ -29,6 +30,7 @@ parser.add_argument("--wandb", type=bool, help="log to wandb", default=True)
 parser.add_argument(
     "--config",
     help="Yaml file for configuratio. If available, the rest of the arguments will be ignored", default=None)
+
 parser.add_argument("--wandb_project", type=str, help="WANDB Project Name",
                     default="TripleStreamsVAE")
 
@@ -54,7 +56,28 @@ parser.add_argument("--n_dec_lyrs_ratio", type=float, help="Number of decoder la
 parser.add_argument("--max_len_enc", type=int, help="Maximum length of the encoder", default=32)
 parser.add_argument("--max_len_dec", type=int, help="Maximum length of the decoder", default=32)
 parser.add_argument("--latent_dim", type=int, help="Overall Dimension of the latent space", default=16)
-parser.add_argument("--n_genres", type=int, help="Number of genres", default=9)
+
+# ---------------------- Control Parameters -----------------------
+parser.add_argument("--encoding_control1_key", type=str, help="control 1 applied to encoder", 
+                    default="Flat Out Vs. Input | Hits | Hamming")
+parser.add_argument("--encoding_control2_key", type=str, help="control 2 applied to encoder", 
+                    default="Flat Out Vs. Input | Accent | Hamming")
+parser.add_argument("--decoding_control1_key", type=str, help="control 1 applied to decoder", 
+                    default="Stream 1 Vs. Flat Out | Hits | Hamming")
+parser.add_argument("--decoding_control2_key", type=str, help="control 2 applied to decoder", 
+                    default="Stream 2 Vs. Flat Out | Hits | Hamming")
+parser.add_argument("--decoding_control3_key", type=str, help="control 3 applied to decoder", 
+                    default="Stream 3 Vs. Flat Out | Hits | Hamming")
+parser.add_argument("--n_encoding_control1_tokens", type=int,
+                    help="Nubmer of tokens", default=33)
+parser.add_argument("--n_encoding_control2_tokens", type=int,
+                    help="Nubmer of tokens", default=10)
+parser.add_argument("--n_decoding_control1_tokens", type=int,
+                    help="Nubmer of tokens", default=10)
+parser.add_argument("--n_decoding_control2_tokens", type=int,
+                    help="Nubmer of tokens", default=10)
+parser.add_argument("--n_decoding_control3_tokens", type=int,
+                    help="Nubmer of tokens", default=10)
 
 # ----------------------- Loss Parameters -----------------------
 parser.add_argument("--beta_annealing_per_cycle_rising_ratio", type=float,
@@ -83,12 +106,10 @@ parser.add_argument("--scale_v_loss", type=float, help="Scale for velocity loss"
 parser.add_argument("--scale_o_loss", type=float, help="Scale for offset loss", default=1)
 
 # ----------------------- Data Parameters -----------------------
-parser.add_argument("--dataset_json_dir", type=str,
+parser.add_argument("--dataset_setting_json_path", type=str,
                     help="Path to the folder hosting the dataset json file",
-                    default="data/dataset_json_settings")
-parser.add_argument("--dataset_json_fname", type=str,
-                    help="fs",
-                    default="Balanced_5000_performed_2000_programmed.json")
+                    default= "data/dataset_json_settings/TripleStreams0_75_Accent.json")
+
 parser.add_argument("--evaluate_on_subset", type=str,
                     help="Using test or evaluation subset for evaluating the model", default="test",
                     choices=['test', 'evaluation'])
@@ -101,12 +122,12 @@ parser.add_argument("--calculate_hit_scores_on_test", type=bool,
                     help="Evaluates the quality of the hit models on test/evaluation set",
                     default=True)
 parser.add_argument("--piano_roll_samples", type=bool, help="Generate audio samples", default=True)
-parser.add_argument("--piano_roll_frequency", type=int, help="Frequency of piano roll generatio", default=10)
-parser.add_argument("--hit_score_frequency", type=int, help="Frequency of hit score generatio", default=5)
+parser.add_argument("--piano_roll_frequency", type=int, help="Frequency of piano roll generation", default=10)
+parser.add_argument("--hit_score_frequency", type=int, help="Frequency of hit score generation", default=5)
 
 # ----------------------- Misc Params -----------------------
 parser.add_argument("--save_model", type=bool, help="Save model", default=True)
-parser.add_argument("--save_model_dir", type=str, help="Path to save the model", default="misc/VAE")
+parser.add_argument("--save_model_dir", type=str, help="Path to save the model", default="misc/TripleStreamsVAE")
 parser.add_argument("--save_model_frequency", type=int, help="Save model every n epochs", default=5)
 
 args, unknown = parser.parse_known_args()
@@ -145,7 +166,11 @@ else:
         latent_dim=args.latent_dim,
         max_len_enc=args.max_len_enc,
         max_len_dec=args.max_len_dec,
-        n_genres=args.n_genres,
+        encoding_control1_key=args.encoding_control1_key,
+        encoding_control2_key=args.encoding_control2_key,
+        decoding_control1_key=args.decoding_control1_key,
+        decoding_control2_key=args.decoding_control2_key,
+        decoding_control3_key=args.decoding_control3_key,
         velocity_dropout=args.velocity_dropout,
         offset_dropout=args.offset_dropout,
         beta_annealing_per_cycle_rising_ratio=float(args.beta_annealing_per_cycle_rising_ratio),
@@ -161,8 +186,7 @@ else:
         lr=args.lr,
         optimizer=args.optimizer,
         is_testing=args.is_testing,
-        dataset_json_dir=args.dataset_json_dir,
-        dataset_json_fname=args.dataset_json_fname,
+        dataset_setting_json_path=args.dataset_setting_json_path,
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
 
@@ -186,7 +210,7 @@ if __name__ == "__main__":
     if loaded_via_config:
         model_code = wandb.Artifact("train_code_and_config", type="train_code_and_config")
         model_code.add_file(args.config)
-        model_code.add_file("train_MuteGenreLatentVAE.py")
+        model_code.add_file("train_TripleStreamsVAE.py")
         wandb.run.log_artifact(model_code)
 
     # Reset config to wandb.config (in case of sweeping with YAML necessary)
@@ -200,29 +224,19 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------------------------------
     # only 1% of the dataset is used if we are testing the script (is_testing==True)
     should_place_all_data_on_cuda = args.force_data_on_cuda and torch.cuda.is_available()
-    training_dataset = Groove2Drum2BarDataset(
-        dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
+    training_dataset = Groove2TripleStreams2BarDataset(
+        config=config,
         subset_tag="train",
-        max_len=int(args.max_len_enc),
-        tapped_voice_idx=2,
-        collapse_tapped_sequence=collapse_tapped_sequence,
         use_cached=True,
-        down_sampled_ratio=0.1 if args.is_testing is True else None,
-        augment_dataset=True,
-        move_all_to_gpu=should_place_all_data_on_cuda
+        downsampled_size=1000 if args.is_testing is True else None,
     )
     train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=True)
 
-    test_dataset = Groove2Drum2BarDataset(
-        dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
+    test_dataset = Groove2TripleStreams2BarDataset(
+        config=config,
         subset_tag="test",
-        max_len=int(args.max_len_enc),
-        tapped_voice_idx=2,
-        collapse_tapped_sequence=collapse_tapped_sequence,
         use_cached=True,
-        down_sampled_ratio=0.1 if args.is_testing is True else None,
-        augment_dataset=True,
-        move_all_to_gpu=should_place_all_data_on_cuda
+        downsampled_size=1000 if args.is_testing is True else None,
     )
 
     test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
@@ -261,44 +275,66 @@ if __name__ == "__main__":
     # Batch Data IO Extractor
     def batch_data_extractor(data_, device=config.device):
         # Extract the data from the batch
-        inputs_ = data_[0].to(device) if data_[0].device.type != device else data_[0]
-        genre_tags = data_[4].to(device) if data_[4].device.type != device else data_[4]
-        outputs_ = data_[5].to(device) if data_[5].device.type != device else data_[5]
-        kick_is_muted = data_[8].to(device) if data_[8].device.type != device else data_[8]
-        snare_is_muted = data_[9].to(device) if data_[9].device.type != device else data_[9]
-        hat_is_muted = data_[10].to(device) if data_[10].device.type != device else data_[10]
-        tom_is_muted = data_[11].to(device) if data_[11].device.type != device else data_[11]
-        cymbal_is_muted = data_[12].to(device) if data_[12].device.type != device else data_[12]
-        return inputs_, genre_tags, outputs_, kick_is_muted, snare_is_muted, hat_is_muted, tom_is_muted, cymbal_is_muted
+        input_grooves = data_[0].to(device) if data_[0].device.type != device else data_[0]
+        output_streams = data_[1].to(device) if data_[1].device.type != device else data_[1]
+        encoding_control1_tokens = data_[2].to(device) if data_[2].device.type != device else data_[2]
+        encoding_control2_tokens = data_[3].to(device) if data_[3].device.type != device else data_[3]
+        decoding_control1_tokens = data_[4].to(device) if data_[4].device.type != device else data_[4]
+        decoding_control2_tokens = data_[5].to(device) if data_[5].device.type != device else data_[5]
+        decoding_control3_tokens = data_[6].to(device) if data_[6].device.type != device else data_[6]
+        indices = data_[7]
+
+        return (input_grooves,
+                output_streams,
+                encoding_control1_tokens,
+                encoding_control2_tokens,
+                decoding_control1_tokens,
+                decoding_control2_tokens,
+                decoding_control3_tokens,
+                indices)
 
 
     def predict_using_batch_data(batch_data, model_=model_on_device, device=config.device):
-        flat_hvo_groove, genre_tags, outputs_, kick_is_muted, snare_is_muted, hat_is_muted, tom_is_muted, cymbal_is_muted = batch_data_extractor(
-            batch_data, device)
+        (input_grooves,
+         output_streams,
+         encoding_control1_tokens,
+         encoding_control2_tokens,
+         decoding_control1_tokens,
+         decoding_control2_tokens,
+         decoding_control3_tokens,
+         indices) = batch_data_extractor(batch_data, device)
+
         with torch.no_grad():
             hvo, latent_z = model_.predict(
-                flat_hvo_groove=flat_hvo_groove,
-                genre_tags=genre_tags,
-                kick_is_muted=kick_is_muted,
-                snare_is_muted=snare_is_muted,
-                hat_is_muted=hat_is_muted,
-                tom_is_muted=tom_is_muted,
-                cymbal_is_muted=cymbal_is_muted)
+                flat_hvo_groove=input_grooves,
+                encoding_control1_token=encoding_control1_tokens,
+                encoding_control2_token=encoding_control2_tokens,
+                decoding_control1_token=decoding_control1_tokens,
+                decoding_control2_token=decoding_control2_tokens,
+                decoding_control3_token=decoding_control3_tokens)
+
         return hvo, latent_z
 
 
     def forward_using_batch_data(batch_data, model_=model_on_device, device=config.device):
-        flat_hvo_groove, genre_tags, target_outputs, kick_is_muted, snare_is_muted, hat_is_muted, tom_is_muted, cymbal_is_muted = batch_data_extractor(
-            batch_data, device)
+        (input_grooves,
+         target_output_streams,
+         encoding_control1_tokens,
+         encoding_control2_tokens,
+         decoding_control1_tokens,
+         decoding_control2_tokens,
+         decoding_control3_tokens,
+         indices) = batch_data_extractor(batch_data, device)
+
         h_logits, v_logits, o_logits, mu, log_var, latent_z = model_.forward(
-            flat_hvo_groove=flat_hvo_groove,
-            genre_tags=genre_tags,
-            kick_is_muted=kick_is_muted,
-            snare_is_muted=snare_is_muted,
-            hat_is_muted=hat_is_muted,
-            tom_is_muted=tom_is_muted,
-            cymbal_is_muted=cymbal_is_muted)
-        return h_logits, v_logits, o_logits, mu, log_var, latent_z, target_outputs
+            flat_hvo_groove=input_grooves,
+            encoding_control1_token=encoding_control1_tokens,
+            encoding_control2_token=encoding_control2_tokens,
+            decoding_control1_token=decoding_control1_tokens,
+            decoding_control2_token=decoding_control2_tokens,
+            decoding_control3_token=decoding_control3_tokens)
+
+        return h_logits, v_logits, o_logits, mu, log_var, latent_z, target_output_streams
 
 
     previous_loaded_dataset_for_umap_train = None
@@ -372,30 +408,32 @@ if __name__ == "__main__":
         # ---------------------------------------------------------------------------------------------------
         if args.piano_roll_samples:
             if epoch % args.piano_roll_frequency == 0:
-                logger.info("________Generating PianoRolls...")
-                media, previous_evaluator_for_piano_rolls = eval_utils.get_pianoroll_for_wandb(
-                    model=model_on_device,
-                    predict_using_batch_data=predict_using_batch_data,
-                    dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
-                    subset_name='test',
-                    down_sampled_ratio=0.02,
-                    cached_folder="cached/GrooveEvaluator/templates",
-                    divide_by_genre=True,
-                    previous_evaluator=previous_evaluator_for_piano_rolls,
-                    need_piano_roll=True,
-                    need_kl_plot=False,
-                    need_audio=False
-                )
-                wandb.log(media, commit=False)
+                # logger.info("________Generating PianoRolls...")
+                # media, previous_evaluator_for_piano_rolls = eval_utils.get_pianoroll_for_wandb(
+                #     model=model_on_device,
+                #     predict_using_batch_data=predict_using_batch_data,
+                #     dataset_setting_json_path=f"{config.dataset_setting_json_path}",
+                #     subset_name='test',
+                #     down_sampled_ratio=0.02,
+                #     cached_folder="cached/GrooveEvaluator/templates",
+                #     divide_by_genre=False,
+                #     previous_evaluator=previous_evaluator_for_piano_rolls,
+                #     need_piano_roll=True,
+                #     need_kl_plot=False,
+                #     need_audio=False
+                # )
+                # wandb.log(media, commit=False)
 
                 # umap
                 logger.info("________Generating UMAP...")
                 media, previous_loaded_dataset_for_umap_test = eval_utils.generate_umap_for_wandb(
-                    predict_using_batch_data=predict_using_batch_data,
-                    dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
-                    subset_name='test',
-                    previous_loaded_dataset=previous_loaded_dataset_for_umap_test,
-                    down_sampled_ratio=0.5,
+                    config=config,
+                    subset_tag='test',
+                    predict_using_batch_data_method=predict_using_batch_data,
+                    use_cached=True, # set to false, to use new samples each time
+                    downsampled_size=1000,   # use only 1000 random samples for the umap
+                    tag_key="collection",    # visualize (color) based on collection
+                    previous_loaded_dataset=previous_loaded_dataset_for_umap_test
                 )
                 if media is not None:
                     wandb.log(media, commit=False)
@@ -417,7 +455,7 @@ if __name__ == "__main__":
                 logger.info("________Calculating Hit Scores on Train Set...")
                 train_set_hit_scores, previous_evaluator_for_hit_scores_train = eval_utils.get_hit_scores(
                     predict_using_batch_data=predict_using_batch_data,
-                    dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
+                    dataset_setting_json_path=f"{config.dataset_setting_json_path}",
                     subset_name='train',
                     down_sampled_ratio=None,
                     cached_folder="cached/GrooveEvaluator/templates",
@@ -430,7 +468,7 @@ if __name__ == "__main__":
             logger.info("________Calculating Hit Scores on Test Set...")
             test_set_hit_scores, previous_evaluator_for_hit_scores_test = eval_utils.get_hit_scores(
                 predict_using_batch_data=predict_using_batch_data,
-                dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
+                dataset_setting_json_path=f"{dataset_setting_json_path}",
                 subset_name=args.evaluate_on_subset,
                 down_sampled_ratio=None,
                 cached_folder="cached/GrooveEvaluator/templates",

@@ -1283,7 +1283,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
                  config,
                  subset_tag,            # pass "train" or "validation" or "test"
                  use_cached=True,
-                 down_sampled_size=None,
+                 downsampled_size=None,
                  force_regenerate=False):
 
         """
@@ -1303,9 +1303,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
         :param force_regenerate: [bool] if True, will regenerate the cached version of the dataset
         """
 
-        if down_sampled_size is not None:
-            if down_sampled_size >= 1:
-                down_sampled_size = None
+
 
         self.dataset_setting_json_path = config["dataset_setting_json_path"]
         self.subset_tag = subset_tag
@@ -1320,7 +1318,6 @@ class Groove2TripleStreams2BarDataset(Dataset):
         self.decoding_control2_key = config["decoding_control2_key"]
         self.n_decoding_control3_tokens = config["n_decoding_control3_tokens"]
         self.decoding_control3_key = config["decoding_control3_key"]
-        self.down_sampled_size = down_sampled_size
         with open(self.dataset_setting_json_path, "r") as f:
             self.json = json.load(f)
 
@@ -1330,7 +1327,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
         def get_cached_filepath():
             dir_ = os.path.join("cached/TorchDatasets", self.json["tag"], self.subset_tag)
             os.makedirs(dir_, exist_ok=True)
-            filename = f"{self.subset_tag}_{self.max_len}_{self.down_sampled_size}" \
+            filename = f"{self.subset_tag}_{self.max_len}_{downsampled_size}" \
             f"_{self.n_encoding_control1_tokens}_{self.encoding_control1_key}" \
             f"_{self.n_encoding_control2_tokens}_{self.encoding_control2_key}" \
             f"_{self.n_decoding_control1_tokens}_{self.decoding_control1_key}" \
@@ -1372,15 +1369,26 @@ class Groove2TripleStreams2BarDataset(Dataset):
             # load pre-stored hvo_sequences or
             #   a portion of them uniformly sampled if down_sampled_ratio is provided
             # ------------------------------------------------------------------------------------------
-            print("\n\n LOADING THE DICTIONARY CONTAINING RAW DATA")
+            dataLoaderLogger.info("\n\n LOADING THE DICTIONARY CONTAINING RAW DATA")
             loaded_data_dictionary = load_pkl_bz2_dict(get_source_compiled_data_dictionary_path(), allow_pickle_arrays=True)
+            n_samples = len(loaded_data_dictionary["metadata"])
+            
+            if downsampled_size is not None:
+                if downsampled_size >= n_samples:
+                    downsampled_size = None
+                else:
+                    downsampled_size = downsampled_size
+            else:
+                downsampled_size = downsampled_size
 
+            print(downsampled_size, "downsampled_size")
+            
             # check if only a subset of the data is needed
-            if self.down_sampled_size is not None:
-                n_samples = len(loaded_data_dictionary[loaded_data_dictionary.keys()[0]])
-                sampled_indices = np.random.choice(n_samples, self.down_sampled_size, replace=False)
+            if downsampled_size is not None:
+                sampled_indices = np.random.choice(n_samples, downsampled_size, replace=False)
+                dataLoaderLogger.info(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
                 for k, v in loaded_data_dictionary.items():
-                    loaded_data_dictionary[k] = v[sampled_indices]
+                    loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
 
 
             # Populate already available fields
@@ -1447,7 +1455,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
         dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
 
     def __len__(self):
-        return len(self.hvo_sequences)
+        return len(self.metadata)
 
     def __getitem__(self, idx):
         return (self.input_grooves[idx],
@@ -1493,7 +1501,8 @@ if __name__ == "__main__":
         'n_decoding_control2_tokens': 12,
         'n_decoding_control3_tokens': 12,
 
-        'd_model': 128,
+        'd_model_enc': 128,
+        'd_model_dec': 128,
         'embedding_size_src': 3,
         'embedding_size_tgt': 9,
         'nhead_enc': 4,
@@ -1516,6 +1525,7 @@ if __name__ == "__main__":
         config=config,
         subset_tag="train",
         use_cached=True,
+        downsampled_size=1000,
         force_regenerate=False
     )
 
