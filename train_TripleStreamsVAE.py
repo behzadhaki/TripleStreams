@@ -408,21 +408,22 @@ if __name__ == "__main__":
         # ---------------------------------------------------------------------------------------------------
         if args.piano_roll_samples:
             if epoch % args.piano_roll_frequency == 0:
-                # logger.info("________Generating PianoRolls...")
-                # media, previous_evaluator_for_piano_rolls = eval_utils.get_pianoroll_for_wandb(
-                #     model=model_on_device,
-                #     predict_using_batch_data=predict_using_batch_data,
-                #     dataset_setting_json_path=f"{config.dataset_setting_json_path}",
-                #     subset_name='test',
-                #     down_sampled_ratio=0.02,
-                #     cached_folder="cached/GrooveEvaluator/templates",
-                #     divide_by_genre=False,
-                #     previous_evaluator=previous_evaluator_for_piano_rolls,
-                #     need_piano_roll=True,
-                #     need_kl_plot=False,
-                #     need_audio=False
-                # )
-                # wandb.log(media, commit=False)
+                logger.info("________Generating PianoRolls...")
+                media, previous_evaluator_for_piano_rolls = eval_utils.get_pianoroll_for_wandb(
+                    config=config,
+                    subset_tag='test',
+                    use_cached=False,
+                    downsampled_size=100,
+                    predict_using_batch_data_method=predict_using_batch_data,
+                    tag_key="collection",
+                    cached_folder="cached/GrooveEvaluator/templates",
+                    divide_by_collection=True,
+                    previous_evaluator=previous_evaluator_for_piano_rolls,
+                    need_piano_roll=True,
+                    need_kl_plot=False,
+                    need_audio=False
+                )
+                wandb.log(media, commit=False)
 
                 # umap
                 logger.info("________Generating UMAP...")

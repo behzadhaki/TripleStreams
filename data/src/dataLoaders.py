@@ -1350,14 +1350,14 @@ class Groove2TripleStreams2BarDataset(Dataset):
                 data = pickle.load(ifile)
                 ifile.close()
 
-                self.input_grooves = torch.tensor(data["input_grooves"], dtype=torch.float32)
-                self.output_streams = torch.tensor(data["output_streams"], dtype=torch.float32)
-                self.flat_output_streams = torch.tensor(data["flat_output_streams"], dtype=torch.float32)
-                self.encoding_control1_tokens = torch.tensor(data["encoding_control1_tokens"], dtype=torch.long)
-                self.encoding_control2_tokens = torch.tensor(data["encoding_control2_tokens"], dtype=torch.long)
-                self.decoding_control1_tokens = torch.tensor(data["decoding_control1_tokens"], dtype=torch.long)
-                self.decoding_control2_tokens = torch.tensor(data["decoding_control2_tokens"], dtype=torch.long)
-                self.decoding_control3_tokens = torch.tensor(data["decoding_control3_tokens"], dtype=torch.long)
+                self.input_grooves = data["input_grooves"]
+                self.output_streams = data["output_streams"]
+                self.flat_output_streams = data["flat_output_streams"]
+                self.encoding_control1_tokens = data["encoding_control1_tokens"]
+                self.encoding_control2_tokens = data["encoding_control2_tokens"]
+                self.decoding_control1_tokens = data["decoding_control1_tokens"]
+                self.decoding_control2_tokens = data["decoding_control2_tokens"]
+                self.decoding_control3_tokens = data["decoding_control3_tokens"]
                 self.metadata = data["metadata"]
                 self.tempos = data["tempos"]
                 self.collection = data["collection"]
@@ -1441,17 +1441,25 @@ class Groove2TripleStreams2BarDataset(Dataset):
                 pickle.dump(data_to_dump, ofile)
                 ofile.close()
 
-                # Conver to tensors (patterns as float32 and controls as long)
-                # ------------------------------------------------------------------------------------------
-                self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
-                self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
-                self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
-                self.encoding_control1_tokens = torch.tensor(self.encoding_control1_tokens, dtype=torch.long)
-                self.encoding_control2_tokens = torch.tensor(self.encoding_control2_tokens, dtype=torch.long)
-                self.decoding_control1_tokens = torch.tensor(self.decoding_control1_tokens, dtype=torch.long)
-                self.decoding_control2_tokens = torch.tensor(self.decoding_control2_tokens, dtype=torch.long)
-                self.decoding_control3_tokens = torch.tensor(self.decoding_control3_tokens, dtype=torch.long)
+        # Conver to tensors (patterns as float32 and controls as long)
+        # ------------------------------------------------------------------------------------------
+        print("CONVERTING TO TENSORS END OF CONSTRUCTOR ")
+        self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
+        self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
+        self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
+        self.encoding_control1_tokens = torch.tensor(self.encoding_control1_tokens, dtype=torch.long)
+        self.encoding_control2_tokens = torch.tensor(self.encoding_control2_tokens, dtype=torch.long)
+        self.decoding_control1_tokens = torch.tensor(self.decoding_control1_tokens, dtype=torch.long)
+        self.decoding_control2_tokens = torch.tensor(self.decoding_control2_tokens, dtype=torch.long)
+        self.decoding_control3_tokens = torch.tensor(self.decoding_control3_tokens, dtype=torch.long)
 
+        # the following two are necessary fields for evaluators
+        for ix, _ in enumerate(self.metadata):
+            self.metadata[ix].update({'full_midi_filename': f"{ix}"})
+            self.metadata[ix].update({'master_id': f"{ix}"})
+            self.metadata[ix].update({'style_primary': self.metadata[ix]["collection"]})
+
+        self.indices = list(range(len(self.metadata)))
         dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
 
     def __len__(self):
@@ -1465,7 +1473,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
                 self.decoding_control1_tokens[idx],
                 self.decoding_control2_tokens[idx],
                 self.decoding_control3_tokens[idx],
-                idx
+                self.metadata[idx]
                 )
 
     def __repr__(self):

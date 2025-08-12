@@ -179,6 +179,7 @@ def compile_into_list_of_hvo_seqs(input_hvos, output_hvos, metadatas, qpms=None)
         n_outputs_voices = output_hvo.shape[-1] // 3
         n_overall_voices = n_outputs_voices + 1
 
+
         for i in range(n_outputs_voices):
             drum_mapping[f"stream_{i + 1}"] = [37 + i]
 

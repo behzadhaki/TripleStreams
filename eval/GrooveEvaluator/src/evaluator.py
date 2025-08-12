@@ -92,6 +92,7 @@ class Evaluator:
             need_kl_oa=True,
             n_samples_to_synthesize_and_draw="all",
             disable_tqdm=False,
+            has_hvo_sequences_in_dataset=True
             # todo distance measures KL, Overlap, intra and interset
     ):
         """
@@ -126,10 +127,12 @@ class Evaluator:
         self.num_voices = int(max_hvo_shape[-1] / 3)
 
         self.dataset = dataset
+        self.has_hvo_sequences_in_dataset = has_hvo_sequences_in_dataset
 
-        if self.dataset is not None:
+        if self.dataset is not None and has_hvo_sequences_in_dataset:
             hvo_sequences_list = [hvo for hvo in self.dataset.hvo_sequences]
         else:
+            assert hvo_sequences_list_ is not None, "either dataset must have hvo_sequences field or you should provide manually via hvo_sequences_list_"
             hvo_sequences_list = deepcopy(hvo_sequences_list_)
 
         n_samples_to_use = len(hvo_sequences_list) if n_samples_to_use == -1 else n_samples_to_use
