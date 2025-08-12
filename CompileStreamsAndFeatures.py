@@ -1,7 +1,5 @@
-try:
-    from triple_stream_data_utils import  get_split_to_streams, Jaccard_similarity, hamming_distance, print_all_datasets_structure, get_split_n_bar_phrases, get_accent_hits_from_velocities, list_permutations
-except Exception as e:
-    pass
+
+from triple_stream_data_utils import  print_all_datasets_structure, get_split_to_streams, Jaccard_similarity, hamming_distance, print_all_datasets_structure, get_split_n_bar_phrases, get_accent_hits_from_velocities, list_permutations
 
 # LOAD DATASETS
 import tqdm

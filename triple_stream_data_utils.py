@@ -455,119 +455,114 @@ def plot_scatter_input_output_distribution(control_features_df, use_normalized_a
 
 
 
-import numpy as np
-import plotly.graph_objects as go
+try:
+    import numpy as np
+    import plotly.graph_objects as go
 
-import numpy as np
-import plotly.graph_objects as go
+    def create_heatmap_histogram_from_lists(
+        feat1, feat2,
+        xlabel="X", ylabel="Y",
+        title=None, show_zeros=False,
+        figsize=(12, 6),
+        clip_counts_at=None,
+        saturate_colors_only=False,  # if True: colors capped, text shows true counts
+    ):
+        if len(feat1) != len(feat2):
+            raise ValueError("feat1 and feat2 must have the same length.")
 
-import numpy as np
-import plotly.graph_objects as go
+        # --- Vectorized unique + indexing ---
+        x_arr = np.asarray(feat1, dtype=object)
+        y_arr = np.asarray(feat2, dtype=object)
 
-import numpy as np
-import plotly.graph_objects as go
+        # Sorted unique values + inverse indices (maps each element to its code)
+        x_vals, x_inv = np.unique(x_arr, return_inverse=True)
+        y_vals, y_inv = np.unique(y_arr, return_inverse=True)
 
-def create_heatmap_histogram_from_lists(
-    feat1, feat2,
-    xlabel="X", ylabel="Y",
-    title=None, show_zeros=False,
-    figsize=(12, 6),
-    clip_counts_at=None,
-    saturate_colors_only=False,  # if True: colors capped, text shows true counts
-):
-    if len(feat1) != len(feat2):
-        raise ValueError("feat1 and feat2 must have the same length.")
+        nx, ny = x_vals.size, y_vals.size
 
-    # --- Vectorized unique + indexing ---
-    x_arr = np.asarray(feat1, dtype=object)
-    y_arr = np.asarray(feat2, dtype=object)
+        # --- Vectorized counting ---
+        flat_idx = np.ravel_multi_index((y_inv, x_inv), dims=(ny, nx))
+        counts_true = np.bincount(flat_idx, minlength=ny * nx).reshape(ny, nx).astype(np.int32)
 
-    # Sorted unique values + inverse indices (maps each element to its code)
-    x_vals, x_inv = np.unique(x_arr, return_inverse=True)
-    y_vals, y_inv = np.unique(y_arr, return_inverse=True)
+        # --- Color matrix (optionally clipped) ---
+        counts_for_color = np.minimum(counts_true, clip_counts_at) if clip_counts_at is not None else counts_true
 
-    nx, ny = x_vals.size, y_vals.size
+        # --- Text annotations ---
+        if saturate_colors_only:
+            text_base = counts_true
+        else:
+            text_base = counts_for_color
 
-    # --- Vectorized counting ---
-    flat_idx = np.ravel_multi_index((y_inv, x_inv), dims=(ny, nx))
-    counts_true = np.bincount(flat_idx, minlength=ny * nx).reshape(ny, nx).astype(np.int32)
+        if show_zeros:
+            text_arr = text_base.astype(str)
+        else:
+            text_arr = np.where(text_base > 0, text_base.astype(str), "")
 
-    # --- Color matrix (optionally clipped) ---
-    counts_for_color = np.minimum(counts_true, clip_counts_at) if clip_counts_at is not None else counts_true
+        # --- Axis labels ---
+        x_ticks = x_vals.astype(str).tolist()
 
-    # --- Text annotations ---
-    if saturate_colors_only:
-        text_base = counts_true
-    else:
-        text_base = counts_for_color
+        # Format y-axis labels to two decimal places if numeric
+        try:
+            y_ticks = [f"{float(val):.2f}" for val in y_vals]
+        except ValueError:
+            # Some values aren't numeric → fallback to string
+            y_ticks = [str(val) for val in y_vals]
 
-    if show_zeros:
-        text_arr = text_base.astype(str)
-    else:
-        text_arr = np.where(text_base > 0, text_base.astype(str), "")
+        if title is None:
+            title = f"Heatmap: {xlabel} vs {ylabel} (unique values)"
 
-    # --- Axis labels ---
-    x_ticks = x_vals.astype(str).tolist()
+        # inches -> px (100 dpi)
+        plot_width = int(figsize[0] * 100)
+        plot_height = int(figsize[1] * 100)
 
-    # Format y-axis labels to two decimal places if numeric
-    try:
-        y_ticks = [f"{float(val):.2f}" for val in y_vals]
-    except ValueError:
-        # Some values aren't numeric → fallback to string
-        y_ticks = [str(val) for val in y_vals]
+        heatmap_kwargs = dict(
+            z=counts_for_color,
+            x=x_ticks,
+            y=y_ticks,
+            text=text_arr,
+            texttemplate="%{text}",
+            textfont={"size": 6},
+            colorscale="Plasma",
+            showscale=True,
+            colorbar=dict(title="Count"),
+            hovertemplate=f'{xlabel}: %{{x}}<br>{ylabel}: %{{y}}<br>Count: %{{z}}<extra></extra>'
+        )
 
-    if title is None:
-        title = f"Heatmap: {xlabel} vs {ylabel} (unique values)"
+        # Force color scale to capped range when clipping
+        if clip_counts_at is not None:
+            heatmap_kwargs.update(dict(zmin=0, zmax=clip_counts_at))
 
-    # inches -> px (100 dpi)
-    plot_width = int(figsize[0] * 100)
-    plot_height = int(figsize[1] * 100)
-
-    heatmap_kwargs = dict(
-        z=counts_for_color,
-        x=x_ticks,
-        y=y_ticks,
-        text=text_arr,
-        texttemplate="%{text}",
-        textfont={"size": 6},
-        colorscale="Plasma",
-        showscale=True,
-        colorbar=dict(title="Count"),
-        hovertemplate=f'{xlabel}: %{{x}}<br>{ylabel}: %{{y}}<br>Count: %{{z}}<extra></extra>'
-    )
-
-    # Force color scale to capped range when clipping
-    if clip_counts_at is not None:
-        heatmap_kwargs.update(dict(zmin=0, zmax=clip_counts_at))
-
-    fig = go.Figure(data=go.Heatmap(**heatmap_kwargs))
-    fig.update_layout(
-        title=title,
-        xaxis_title=xlabel,
-        yaxis_title=ylabel,
-        width=plot_width,
-        height=plot_height,
-    )
-    return fig
+        fig = go.Figure(data=go.Heatmap(**heatmap_kwargs))
+        fig.update_layout(
+            title=title,
+            xaxis_title=xlabel,
+            yaxis_title=ylabel,
+            width=plot_width,
+            height=plot_height,
+        )
+        return fig
 
 
-import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt
 
-# plot input features
-def plot_scatter_distribution(feat1, feat2, xlabel, ylabel, title=None, alpha=0.005, figsize=(6, 6),
-                              xlim=(-.05, 1.05), ylim=(-.05, 1.05)):
-    if not HAS_MATPLOT: return
-    plt.figure(figsize=figsize)
-    x = feat1
-    y = feat2
-    plt.scatter(x, y, alpha=alpha)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    if title is not None:
-        plt.title(title)
-    if xlim is not None:
-        plt.xlim(xlim)
-    if ylim is not None:
-        plt.ylim(ylim)
-    plt.tight_layout()
-    plt.show()
+    # plot input features
+    def plot_scatter_distribution(feat1, feat2, xlabel, ylabel, title=None, alpha=0.005, figsize=(6, 6),
+                                  xlim=(-.05, 1.05), ylim=(-.05, 1.05)):
+        if not HAS_MATPLOT: return
+        plt.figure(figsize=figsize)
+        x = feat1
+        y = feat2
+        plt.scatter(x, y, alpha=alpha)
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        if title is not None:
+            plt.title(title)
+        if xlim is not None:
+            plt.xlim(xlim)
+        if ylim is not None:
+            plt.ylim(ylim)
+        plt.tight_layout()
+        plt.show()
+
+except:
+    pass

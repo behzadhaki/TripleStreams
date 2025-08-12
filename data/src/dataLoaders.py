@@ -1443,6 +1443,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
 
         # Conver to tensors (patterns as float32 and controls as long)
         # ------------------------------------------------------------------------------------------
+        self.indices = list(range(len(self.input_grooves)))
         self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
         self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
         self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
@@ -1452,11 +1453,11 @@ class Groove2TripleStreams2BarDataset(Dataset):
         self.decoding_control2_tokens = torch.tensor(self.decoding_control2_tokens, dtype=torch.long)
         self.decoding_control3_tokens = torch.tensor(self.decoding_control3_tokens, dtype=torch.long)
 
-        # the following two are necessary fields for evaluators
-        for ix, _ in enumerate(self.metadata):
-            self.metadata[ix].update({'full_midi_filename': f"{ix}"})
-            self.metadata[ix].update({'master_id': f"{ix}"})
-            self.metadata[ix].update({'style_primary': self.metadata[ix]["collection"]})
+        # # the following two are necessary fields for evaluators
+        # for ix, _ in enumerate(self.metadata):
+        #     self.metadata[ix].update({'full_midi_filename': f"{ix}"})
+        #     self.metadata[ix].update({'mast er_id': f"{ix}"})
+        #     self.metadata[ix].update({'style_primary': self.metadata[ix]["collection"]})
 
         self.indices = list(range(len(self.metadata)))
         dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
@@ -1472,7 +1473,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
                 self.decoding_control1_tokens[idx],
                 self.decoding_control2_tokens[idx],
                 self.decoding_control3_tokens[idx],
-                self.metadata[idx]
+                self.indices[idx]
                 )
 
     def __repr__(self):
@@ -1502,11 +1503,11 @@ if __name__ == "__main__":
         'decoding_control2_key': "Stream 2 Vs. Flat Out | Hits | Hamming",
         'decoding_control3_key': "Stream 3 Vs. Flat Out | Hits | Hamming",
 
-        'n_encoding_control1_tokens': 33,
+        'n_encoding_control1_tokens': 20,  # should be 33
         'n_encoding_control2_tokens': 10,
-        'n_decoding_control1_tokens': 12,
-        'n_decoding_control2_tokens': 12,
-        'n_decoding_control3_tokens': 12,
+        'n_decoding_control1_tokens': 20,
+        'n_decoding_control2_tokens': 10,
+        'n_decoding_control3_tokens': 10,
 
         'd_model_enc': 128,
         'd_model_dec': 128,
@@ -1532,9 +1533,30 @@ if __name__ == "__main__":
         config=config,
         subset_tag="train",
         use_cached=True,
-        downsampled_size=1000,
+        downsampled_size=None,
         force_regenerate=False
     )
+    from torch.utils.data import DataLoader
+    loader = DataLoader(
+        training_dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0,  # <—
+        drop_last=False
+    )
+
+    ds = loader.dataset  # might be Subset/ConcatDataset, see below
+    cnt = 0
+    all_unique_metadata_keys = []
+    for i in range(len(ds)):
+        s = ds[i]
+        if 'master_id' not in s[-1]:
+            c+=1
+        for k in s[-1].keys():
+            all_unique_metadata_keys.append(k) if k not in all_unique_metadata_keys else None
+
+
+    print(cnt, len(ds))
 
     from model import TripleStreamsVAE
 
@@ -1553,28 +1575,28 @@ if __name__ == "__main__":
                 )
                 '''
 
-    model = TripleStreamsVAE(config)
-
-    import tqdm
-    for i in tqdm.trange(1000):
-        start = i * 100
-        end = (i + 1) * 100
-
-        batch_data = training_dataset[start:end]
-        input_grooves = batch_data[0]
-        output_streams = batch_data[1]
-        encoding_control1_tokens = batch_data[2]
-        encoding_control2_tokens = batch_data[3]
-        decoding_control1_tokens = batch_data[4]
-        decoding_control2_tokens = batch_data[5]
-        decoding_control3_tokens = batch_data[6]
-        indices = batch_data[7]
-
-        model.forward(
-            flat_hvo_groove=input_grooves,
-            encoding_control1_token=encoding_control1_tokens,
-            encoding_control2_token=encoding_control2_tokens,
-            decoding_control1_token=decoding_control1_tokens,
-            decoding_control2_token=decoding_control2_tokens,
-            decoding_control3_token=decoding_control3_tokens,
-        )
+    # model = TripleStreamsVAE(config)
+    #
+    # import tqdm
+    # for i in tqdm.trange(1000):
+    #     start = i * 100
+    #     end = (i + 1) * 100
+    #
+    #     batch_data = training_dataset[start:end]
+    #     input_grooves = batch_data[0]
+    #     output_streams = batch_data[1]
+    #     encoding_control1_tokens = batch_data[2]
+    #     encoding_control2_tokens = batch_data[3]
+    #     decoding_control1_tokens = batch_data[4]
+    #     decoding_control2_tokens = batch_data[5]
+    #     decoding_control3_tokens = batch_data[6]
+    #     indices = batch_data[7]
+    #
+    #     model.forward(
+    #         flat_hvo_groove=input_grooves,
+    #         encoding_control1_token=encoding_control1_tokens,
+    #         encoding_control2_token=encoding_control2_tokens,
+    #         decoding_control1_token=decoding_control1_tokens,
+    #         decoding_control2_token=decoding_control2_tokens,
+    #         decoding_control3_token=decoding_control3_tokens,
+    #     )

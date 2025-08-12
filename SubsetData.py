@@ -179,6 +179,13 @@ if __name__ == "__main__":
             else:
                 raise KeyError(f"Key '{key}' not found in the collection data. Please check the dataset or remove from special features.")
 
+        # the following two are necessary fields for evaluators in the training pipeline
+        for ix in range(len(collection_data['collection'])):
+            collection_data['metadata'][ix].update({'full_midi_filename': f"{ix}_dummy.mid"})
+            collection_data['metadata'][ix].update({'master_id': f"ID {ix}"})
+            collection_data['metadata'][ix].update({'style_primary': f"{collection_data['metadata'][ix]['collection']}"})
+
+
         # Get the indices for training, validation, and testing
         indices = np.arange(n_unpermutated_unique_samples)
         np.random.shuffle(indices)

@@ -198,7 +198,7 @@ def get_pianoroll_for_wandb(
         hvos_array, latent_z = predict_using_batch_data(batch_data=batch_data)
         hvos_array = stack_groove_with_outputs(input_hvos=batch_data[0], output_hvos=hvos_array)
         predictions.append(hvos_array.detach().cpu().numpy())
-        full_midi_filenames.extend(batch_data[-1]['full_midi_filename'])
+        full_midi_filenames.extend([evaluator.dataset.metadata[ix]['full_midi_filename'] for ix in batch_data[-1]])
 
     evaluator.add_unsorted_predictions(
         hvos_array.detach().cpu().numpy(),
@@ -273,7 +273,7 @@ def get_hit_scores(
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Generating Hit Scores - {subset_tag}"):
         hvos_array, latent_z = predict_using_batch_data(batch_data=batch_data)
         predictions.append(hvos_array.detach().cpu().numpy())
-        full_midi_filenames.extend(batch_data[-1]['full_midi_filename'])
+        full_midi_filenames.extend([evaluator.dataset.metadata[ix]['full_midi_filename'] for ix in batch_data[-1]])
 
     evaluator.add_unsorted_predictions(np.concatenate(predictions), full_midi_filenames)
 
