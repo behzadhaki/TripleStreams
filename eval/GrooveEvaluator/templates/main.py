@@ -1,13 +1,13 @@
 from eval.GrooveEvaluator import Evaluator
 from eval.GrooveEvaluator import load_evaluator
 import os
-from data import Groove2Drum2BarDataset, Groove2TripleStreams2BarDataset
+from data import Groove2TripleStreams2BarDataset
 import logging
 import numpy as np
 from hvo_sequence.hvo_seq import HVO_Sequence
 import torch
 
-logger = logging.getLogger("eval.GrooveEvaluator.templates.main")
+logger = logging.getLogger("EVALmain")
 logger.setLevel("DEBUG")
 
 
@@ -88,7 +88,6 @@ def load_evaluator_template(dataset_setting_json_path, subset_name,
     _identifier = f"_{down_sampled_ratio}_ratio_of_{dataset_name}_{subset_name}" \
         if down_sampled_ratio is not None else f"complete_set_of_{dataset_name}_{subset_name}"
     path = os.path.join(cached_folder, f"{_identifier}_evaluator.Eval.bz2")
-    print (path)
 
     if os.path.exists(path):
         if not disable_logging:
@@ -306,7 +305,7 @@ def load_triple_streams_evaluator_template(
     path = os.path.join(cached_folder, f"{_identifier}.EvalTemp.bz2")
 
     if os.path.exists(path) and use_cached:
-        print(f"\n\n\n============= Using cached evaluator at {path}")
+        print(f"\n\n !!! ============= Using cached evaluator at {path} ============ !!!\n\n")
         if not disable_logging:
             logger.info(f"Loading template from {path}")
         eval = load_evaluator(path)

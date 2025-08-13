@@ -12,7 +12,7 @@ from logging import getLogger, DEBUG
 import yaml
 import argparse
 
-logger = getLogger("train_**.py")
+logger = getLogger("")
 logger.setLevel(DEBUG)
 
 # logger.info("MAKE SURE YOU DO THIS")
@@ -145,7 +145,6 @@ if args.config is not None:
         if "wandb_project" not in hparams.keys():
             hparams["wandb_project"] = args.wandb_project
         loaded_via_config = True
-        print(hparams)
 else:
     d_model_dec = int(float(args.d_model_enc) * float(args.d_model_dec_ratio))
     dim_feedforward_enc = int(float(args.d_ff_enc_to_dmodel) * float(args.d_model_enc))
@@ -192,6 +191,16 @@ else:
 
 is_testing = hparams.get("is_testing", False) or args.is_testing
 
+print("\n\n|" + "=" * 80 + "|")
+print(f"\t\tHparameters for the run:")
+print("\n\n|" + "=" * 80 + "|\n\n")
+for key, value in hparams.items():
+    print(f"\t{key}: {value}")
+print("\n\n|" + "=" * 80 + "|")
+if loaded_via_config:
+    print(f"Loaded via config file: {args.config}")
+print("|" + "=" * 80 + "|\n\n\n")
+
 # config files without wandb_project specified
 if args.wandb_project is not None:
     hparams["wandb_project"] = args.wandb_project
@@ -218,7 +227,7 @@ if __name__ == "__main__":
     # Reset config to wandb.config (in case of sweeping with YAML necessary)
     # ----------------------------------------------------------------------------------------------------------
     config = wandb.config
-    print(config)
+
     run_name = wandb_run.name
     run_id = wandb_run.id
     collapse_tapped_sequence = (args.embedding_size_src == 3)
@@ -346,16 +355,16 @@ if __name__ == "__main__":
     previous_evaluator_for_hit_scores_test = None
 
     for epoch in range(config.epochs):
-        print(f"Epoch {epoch} of {config.epochs}, steps so far {step_}")
+
+        print("\n\n|" + "=" * 50 + "|")
+        print(f"\t\tEpoch {epoch} of {config.epochs}, steps so far {step_}")
+        print("|" + "=" * 50 + "|")
 
         # Run the training loop (trains per batch internally)
         # ------------------------------------------------------------------------------------------
         model_on_device.train()
-        
-        print("\n\n\n\n")
 
-
-        logger.info("***************************Training...")
+        logger.info("\n***************************Training...")
 
         kl_beta = beta_np_cyc[epoch] * config.beta_level if config.beta_annealing_activated else config.beta_level
         train_log_metrics, step_ = train_utils.train_loop(
@@ -386,10 +395,7 @@ if __name__ == "__main__":
         # ---------------------------------------------------------------------------------------------------
         model_on_device.eval()  # DON'T FORGET TO SET THE MODEL TO EVAL MODE (check torch no grad)
 
-        print("\n\n\n\n")
-
-
-        logger.info("***************************Testing...")
+        logger.info("\n***************************Testing...")
 
         test_log_metrics = train_utils.test_loop(
             test_dataloader=test_dataloader,
@@ -417,10 +423,9 @@ if __name__ == "__main__":
         
         if args.calculate_hit_scores_on_train:
             if epoch % args.hit_score_frequency == 0:
-                print("\n\n\n\n")
 
-
-                logger.info("________Calculating Hit Scores on Train Set...")
+                print("\n" + "." * 50)
+                logger.info(" >>>>>>>> Calculating Hit Scores on Train Set <<<<<<<<<< ")
                 train_set_hit_scores, previous_evaluator_for_hit_scores_train = eval_utils.get_hit_scores(
                     config=config,
                     subset_tag='train',
@@ -434,13 +439,10 @@ if __name__ == "__main__":
                 )
                 wandb.log(train_set_hit_scores, commit=False)
 
-                print(previous_evaluator_for_hit_scores_train.dataset.metadata[0], "\n", previous_evaluator_for_hit_scores_train.dataset.metadata[-1])
-
             if args.calculate_hit_scores_on_test:
-                print("\n\n\n\n")
 
-
-                logger.info("________Calculating Hit Scores on Test Set...")
+                print("\n" + "." * 50)
+                logger.info("\n >>>>>>>> Calculating Hit Scores on Test Set <<<<<<<<<< ")
                 test_set_hit_scores, previous_evaluator_for_hit_scores_test = eval_utils.get_hit_scores(
                     config=config,
                     subset_tag='test',
@@ -455,16 +457,14 @@ if __name__ == "__main__":
                 )
 
                 wandb.log(test_set_hit_scores, commit=False)
-                print(previous_evaluator_for_hit_scores_test.dataset.metadata[0], "\n", previous_evaluator_for_hit_scores_train.dataset.metadata[-1])
 
         # Generate PianoRolls and UMAP Plots  and KL/OA PLots if Needed
         # ---------------------------------------------------------------------------------------------------
         if args.piano_roll_samples:
             if epoch % args.piano_roll_frequency == 0:
-                print("\n\n\n\n")
 
-
-                logger.info("________Generating PianoRolls...")
+                print("\n" + "." * 50)
+                logger.info("\n >>>>>>>> Generating Piano Rolls <<<<<<<<<< ")
                 media, previous_evaluator_for_piano_rolls = eval_utils.get_pianoroll_for_wandb(
                     config=config,
                     subset_tag='test',
@@ -480,7 +480,6 @@ if __name__ == "__main__":
                     need_audio=False
                 )
                 wandb.log(media, commit=False)
-                print(previous_evaluator_for_piano_rolls.dataset.metadata[0], "\n", previous_evaluator_for_hit_scores_train.dataset.metadata[-1])
 
                 # # umap
                 # logger.info("________Generating UMAP...")

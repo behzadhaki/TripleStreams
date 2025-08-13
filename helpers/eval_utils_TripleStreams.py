@@ -6,11 +6,10 @@ from eval.UMAP import UMapper
 import tqdm
 import time
 
-from helpers.eval_utils import predict_using_batch_data
-from model import BaseVAE, MuteVAE, MuteGenreLatentVAE, MuteLatentGenreInputVAE, TripleStreamsVAE
+from model import BaseVAE, TripleStreamsVAE
 
 from logging import getLogger
-logger = getLogger("helpers.eval_utils")
+logger = getLogger("EvalUtils")
 logger.setLevel("DEBUG")
 from data import Groove2TripleStreams2BarDataset
 
@@ -62,7 +61,7 @@ def generate_umap_for_wandb(
         subset_tag,
         use_cached,
         downsampled_size,
-        predict_using_batch_data_method=None,
+        predict_using_batch_data_method,
         tag_key="collection",
         previous_loaded_dataset=None,
 ):
@@ -109,10 +108,9 @@ def generate_umap_for_wandb(
         drop_last=False,
         pin_memory=False,
     )
-    predict_using_batch_data = predict_using_batch_data_method if predict_using_batch_data_method is not None else predict_using_batch_data
     latents_z = None
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc="Generating UMAP"):
-        _, z = predict_using_batch_data(batch_data=batch_data)
+        _, z = predict_using_batch_data_method(batch_data=batch_data)
         tags_used.extend(batch_data[-1]['collection'])
 
         if latents_z is None:
@@ -140,7 +138,7 @@ def get_pianoroll_for_wandb(
         subset_tag,
         use_cached,
         downsampled_size,
-        predict_using_batch_data_method=None,
+        predict_using_batch_data_method,
         tag_key="collection",
         previous_loaded_dataset=None,
         cached_folder="cached/Evaluators/templates/PRolls",
@@ -190,12 +188,10 @@ def get_pianoroll_for_wandb(
     predictions = []
     full_midi_filenames = []
 
-    predict_using_batch_data = predict_using_batch_data_method if predict_using_batch_data_method is not None \
-        else predict_using_batch_data
 
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader),
                                           desc=f"Generating Hit Scores - {subset_tag}"):
-        hvos_array, latent_z = predict_using_batch_data(batch_data=batch_data)
+        hvos_array, latent_z = predict_using_batch_data_method(batch_data=batch_data)
         hvos_array = stack_groove_with_outputs(input_hvos=batch_data[0], output_hvos=hvos_array)
         predictions.append(hvos_array.detach().cpu().numpy())
         full_midi_filenames.extend([evaluator.dataset.metadata[ix]['full_midi_filename'] for ix in batch_data[-1]])
@@ -238,9 +234,6 @@ def get_hit_scores(
         divide_by_collection=True,   # use collection instead
         previous_evaluator=None):
 
-    predict_using_batch_data = predict_using_batch_data_method if predict_using_batch_data_method is not None \
-        else predict_using_batch_data
-
     # logger.info("Generating the hit scores for subset: {}".format(subset_tag))
     # and model is correct type
 
@@ -272,7 +265,7 @@ def get_hit_scores(
     full_midi_filenames = []
 
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Generating Hit Scores - {subset_tag}"):
-        hvos_array, latent_z = predict_using_batch_data(batch_data=batch_data)
+        hvos_array, latent_z = predict_using_batch_data_method(batch_data=batch_data)
         predictions.append(hvos_array.detach().cpu().numpy())
         full_midi_filenames.extend([evaluator.dataset.metadata[ix]['full_midi_filename'] for ix in batch_data[-1]])
 
@@ -290,56 +283,3 @@ def get_hit_scores(
     logger.info(f"Hit Scores Generation for {subset_tag} took {end - start} seconds")
     return score_dict, evaluator
 
-
-
-def generate_umap(
-        model,
-        device,
-        test_dataset,
-        subset_tag):
-    """
-    Generate the umap for the given model and dataset setting.
-    Args:
-        :param model_: The model to be evaluated
-        :param dataset_setting_json_path: The path to the dataset setting json file
-        :param subset_tag: The name of the subset to be evaluated
-        :param previous_loaded_dataset: The previous loaded dataset to be used for evaluation (this optimizes the loading of the dataset - in the second epoch, pass the returned dataset from the first epoch)
-        :param down_sampled_ratio: The ratio of the subset to be evaluated
-
-    Returns:
-        dictionary ready to be logged by wandb {f"{subset_tag}_{umap}": wandb.Html}
-    """
-
-    start = time.time()
-
-    tags = [hvo_seq.metadata["style_primary"] for hvo_seq in test_dataset.hvo_sequences]
-
-    dataloader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=128,
-        shuffle=False,
-        num_workers=0,
-        drop_last=False,
-        pin_memory=False,
-    )
-
-    latents_z = None
-    for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc="Generating UMAP"):
-        _, z = predict_using_batch_data(batch_data=batch_data, model_=model, device=device)
-
-        if latents_z is None:
-            latents_z = z.detach().cpu().numpy()
-        else:
-            latents_z = np.concatenate((latents_z, z.detach().cpu().numpy()), axis=0)
-
-    try:
-        umapper = UMapper(subset_tag)
-        umapper.fit(latents_z, tags_=tags)
-        p = umapper.plot(show_plot=False, prepare_for_wandb=False, save_plot=False)
-        end = time.time()
-        logger.info(f"UMAP Generation for {subset_tag} took {end - start} seconds")
-        return p
-
-    except Exception as e:
-        logger.info("UMAP failed for subset: {}".format(subset_tag))
-        return None
