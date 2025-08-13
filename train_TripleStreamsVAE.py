@@ -192,8 +192,8 @@ else:
 is_testing = hparams.get("is_testing", False) or args.is_testing
 
 print("\n\n|" + "=" * 80 + "|")
-print(f"\t\tHparameters for the run:")
-print("\n\n|" + "=" * 80 + "|\n\n")
+print(f"\n\tHparameters for the run:")
+print("\n|" + "=" * 80 + "|\n\n")
 for key, value in hparams.items():
     print(f"\t{key}: {value}")
 print("\n\n|" + "=" * 80 + "|")
@@ -227,7 +227,7 @@ if __name__ == "__main__":
     # Reset config to wandb.config (in case of sweeping with YAML necessary)
     # ----------------------------------------------------------------------------------------------------------
     config = wandb.config
-
+    config.device = config.device if torch.cuda.is_available() else 'cpu'
     run_name = wandb_run.name
     run_id = wandb_run.id
     collapse_tapped_sequence = (args.embedding_size_src == 3)
