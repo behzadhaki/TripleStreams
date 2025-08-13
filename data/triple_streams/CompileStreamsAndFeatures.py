@@ -1,3 +1,5 @@
+import sys
+sys.path.insert(0, '../..')  # Adjust the path to your project root if needed
 
 from triple_stream_data_utils import  print_all_datasets_structure, get_split_to_streams, Jaccard_similarity, hamming_distance, print_all_datasets_structure, get_split_n_bar_phrases, get_accent_hits_from_velocities, list_permutations
 
@@ -344,7 +346,7 @@ if __name__ == "__main__":
     print("Accent velocity threshold set to:", accent_v_thresh)
 
     # NON LMD DATASETS
-    data_dir = "data/triple_streams/split_2bars/rest"
+    data_dir = "split_2bars/rest"
     dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])
 
     for dataset_pkl_fname in dataset_pkls:
