@@ -6,7 +6,7 @@ import torch
 from model import TripleStreamsVAE
 from helpers import train_utils
 from helpers import eval_utils_TripleStreams as eval_utils
-from data.src.dataLoaders import Groove2TripleStreams2BarDataset
+from data.src.dataLoaders import get_triplestream_dataset
 from torch.utils.data import DataLoader
 from logging import getLogger, DEBUG
 import yaml
@@ -235,7 +235,7 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------------------------------
     # only 1% of the dataset is used if we are testing the script (is_testing==True)
     should_place_all_data_on_cuda = args.force_data_on_cuda and torch.cuda.is_available()
-    training_dataset = Groove2TripleStreams2BarDataset(
+    training_dataset = get_triplestream_dataset(
         config=config,
         subset_tag="train",
         use_cached=True,
@@ -243,7 +243,7 @@ if __name__ == "__main__":
     )
     train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=True)
 
-    test_dataset = Groove2TripleStreams2BarDataset(
+    test_dataset = get_triplestream_dataset(
         config=config,
         subset_tag="test",
         use_cached=True,
@@ -293,7 +293,8 @@ if __name__ == "__main__":
         decoding_control1_tokens = data_[4].to(device) if data_[4].device.type != device else data_[4]
         decoding_control2_tokens = data_[5].to(device) if data_[5].device.type != device else data_[5]
         decoding_control3_tokens = data_[6].to(device) if data_[6].device.type != device else data_[6]
-        indices = data_[7]
+        metadata = data_[7]
+        indices = data_[8]
 
         return (input_grooves,
                 output_streams,
@@ -302,6 +303,7 @@ if __name__ == "__main__":
                 decoding_control1_tokens,
                 decoding_control2_tokens,
                 decoding_control3_tokens,
+                metadata,
                 indices)
 
 
@@ -313,6 +315,7 @@ if __name__ == "__main__":
          decoding_control1_tokens,
          decoding_control2_tokens,
          decoding_control3_tokens,
+         metadata,
          indices) = batch_data_extractor(batch_data, device)
 
         with torch.no_grad():
@@ -335,6 +338,7 @@ if __name__ == "__main__":
          decoding_control1_tokens,
          decoding_control2_tokens,
          decoding_control3_tokens,
+         metadata,
          indices) = batch_data_extractor(batch_data, device)
 
         h_logits, v_logits, o_logits, mu, log_var, latent_z = model_.forward(

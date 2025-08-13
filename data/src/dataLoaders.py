@@ -2,7 +2,7 @@ from data.src.utils import (get_data_directory_using_filters, get_drum_mapping_u
                             load_original_gmd_dataset_pickle, extract_hvo_sequences_dict, pickle_hvo_dict)
 import torch
 from tqdm import tqdm
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 from math import ceil
 import json
 import logging
@@ -357,7 +357,7 @@ def collect_train_set_info(dataset_setting_json_path_, num_voice_density_bins, n
 # loading a down sampled dataset
 # ---------------------------------------------------------------------------------------------- #
 
-class Groove2TripleStreams2BarDataset(Dataset):
+class Groove2TripleStream2BarDataset(Dataset):
     def __init__(self,
                  config,
                  subset_tag,            # pass "train" or "validation" or "test"
@@ -423,7 +423,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
 
         if use_cached and not force_regenerate:
             if os.path.exists(get_cached_filepath()):
-                dataLoaderLogger.info(f"Groove2TripleStreams2BarDataset Constructor --> Loading Cached Version from: {get_cached_filepath()}")
+                # dataLoaderLogger.info(f"Groove2TripleStreams2BarDataset Constructor --> Loading Cached Version from: {get_cached_filepath()}")
                 ifile = bz2.BZ2File(get_cached_filepath(), 'rb')
                 data = pickle.load(ifile)
                 ifile.close()
@@ -450,10 +450,11 @@ class Groove2TripleStreams2BarDataset(Dataset):
             n_samples = 0
             loaded_data_dictionary = {}
 
-            pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files")
+            pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files") if len(self.dataset_files) > 1 else self.dataset_files
             for dataset_file in pbar:
-                # Update description with current filename
-                pbar.set_description(f"Loading: {dataset_file}")
+                if not isinstance(pbar, list):
+                    # Update description with current filename
+                    pbar.set_description(f"Loading: {dataset_file}")
                 temp = load_pkl_bz2_dict(
                     os.path.join(get_source_compiled_data_dictionary_path(), dataset_file),
                     allow_pickle_arrays=True)
@@ -477,7 +478,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
             # check if only a subset of the data is needed
             if downsampled_size is not None:
                 sampled_indices = np.random.choice(n_samples, downsampled_size, replace=False)
-                dataLoaderLogger.info(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
+                # dataLoaderLogger.info(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
                 for k, v in loaded_data_dictionary.items():
                     loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
 
@@ -513,7 +514,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
             # cache the processed data
             # ------------------------------------------------------------------------------------------
             if use_cached:
-                dataLoaderLogger.info(f"Caching at {get_cached_filepath()}")
+                # dataLoaderLogger.info(f"Caching at {get_cached_filepath()}")
                 data_to_dump = {
                     "input_grooves": self.input_grooves,
                     "output_streams": self.output_streams,
@@ -551,7 +552,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
         #     self.metadata[ix].update({'style_primary': self.metadata[ix]["collection"]})
 
         self.indices = list(range(len(self.metadata)))
-        dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
+        # dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
 
     def __len__(self):
         return len(self.metadata)
@@ -564,6 +565,7 @@ class Groove2TripleStreams2BarDataset(Dataset):
                 self.decoding_control1_tokens[idx],
                 self.decoding_control2_tokens[idx],
                 self.decoding_control3_tokens[idx],
+                self.metadata[idx],
                 self.indices[idx]
                 )
 
@@ -574,6 +576,44 @@ class Groove2TripleStreams2BarDataset(Dataset):
         return text
 
 
+def get_triplestream_dataset(
+        config,
+        subset_tag,            # pass "train" or "validation" or "test"
+        use_cached=True,
+        downsampled_size=None,
+        force_regenerate=False):
+
+    loaded_dataset = []
+
+    downsampled_size = int(downsampled_size / len(config["dataset_files"])) if downsampled_size is not None else None
+
+    try:
+        cfg_dict = config.as_dict()
+    except:
+        cfg_dict = config
+
+    pbar = tqdm.tqdm(cfg_dict["dataset_files"], desc="Loading dataset files")
+    for dataset_file in cfg_dict["dataset_files"]:
+        pbar.set_description(dataset_file)
+        dataLoaderLogger.info(f"Loading dataset file: {dataset_file}")
+        new_config = cfg_dict.copy()
+        new_config["dataset_files"] = [dataset_file]
+        dataset = Groove2TripleStream2BarDataset(
+            config=new_config,
+            subset_tag=subset_tag,
+            use_cached=use_cached,
+            downsampled_size=downsampled_size,
+            force_regenerate=force_regenerate
+        )
+        loaded_dataset.append(dataset)
+    # drop any keys in the metadata that doesnt exist in all datasets
+    common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in loaded_dataset))
+    for ix, ds in enumerate(loaded_dataset):
+        ds.metadata = [{k: v for k, v in sample.items() if k in common_keys} for sample in ds.metadata]
+        dataLoaderLogger.info(f"Loaded dataset {ix} of {len(loaded_dataset)} datasets with {len(loaded_dataset[0])} samples each")
+
+    return ConcatDataset(loaded_dataset)
+
 
 if __name__ == "__main__":
     # tester
@@ -583,12 +623,11 @@ if __name__ == "__main__":
     #
     # =================================================================================================
     # Load Mega dataset as torch.utils.data.Dataset
-    from data import Groove2TripleStreams2BarDataset
 
     import yaml
 
     # load dataset as torch.utils.data.Dataset
-    training_dataset = Groove2TripleStreams2BarDataset(
+    training_dataset = get_triplestream_dataset(
         config=yaml.load(open("helpers/configs/TripleStreams_beta_0.5_test.yaml", "r"), Loader=yaml.FullLoader),
         subset_tag="train",
         use_cached=True,

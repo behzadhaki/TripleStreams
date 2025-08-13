@@ -11,7 +11,7 @@ from model import BaseVAE, TripleStreamsVAE
 from logging import getLogger
 logger = getLogger("EvalUtils")
 logger.setLevel("DEBUG")
-from data import Groove2TripleStreams2BarDataset
+from data import get_triplestream_dataset
 
 
 # def batch_data_extractor(data_, device):
@@ -84,7 +84,7 @@ def generate_umap_for_wandb(
     start = time.time()
 
     if previous_loaded_dataset is None:
-        test_dataset = Groove2TripleStreams2BarDataset(
+        test_dataset = get_triplestream_dataset(
             config=config,
             subset_tag=subset_tag,
             use_cached=use_cached,
@@ -193,7 +193,7 @@ def get_pianoroll_for_wandb(
         hvos_array, latent_z = predict_using_batch_data_method(batch_data=batch_data)
         hvos_array = stack_groove_with_outputs(input_hvos=batch_data[0], output_hvos=hvos_array)
         predictions.append(hvos_array.detach().cpu().numpy())
-        full_midi_filenames.extend([evaluator.dataset.metadata[ix]['full_midi_filename'] for ix in batch_data[-1]])
+        full_midi_filenames.extend(batch_data[-2]['full_midi_filename'])
 
     evaluator.add_unsorted_predictions(
         hvos_array.detach().cpu().numpy(),
@@ -265,7 +265,7 @@ def get_hit_scores(
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Generating Hit Scores - {subset_tag}"):
         hvos_array, latent_z = predict_using_batch_data_method(batch_data=batch_data)
         predictions.append(hvos_array.detach().cpu().numpy())
-        full_midi_filenames.extend([evaluator.dataset.metadata[ix]['full_midi_filename'] for ix in batch_data[-1]])
+        full_midi_filenames.extend(batch_data[-2]['full_midi_filename'])
 
     evaluator.add_unsorted_predictions(np.concatenate(predictions), full_midi_filenames)
 

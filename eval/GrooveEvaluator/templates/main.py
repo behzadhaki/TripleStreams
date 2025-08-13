@@ -1,6 +1,6 @@
 from eval.GrooveEvaluator import Evaluator
 import os
-from data import Groove2TripleStreams2BarDataset
+from data import get_triplestream_dataset
 import logging
 import numpy as np
 from hvo_sequence.hvo_seq import HVO_Sequence
@@ -99,9 +99,9 @@ def compile_into_list_of_hvo_seqs(output_hvos, metadatas, input_hvos=None, qpms=
 
     drum_mapping = {"groove": [36]} if input_hvos is not None else {}
 
-    for i in range(output_hvos.shape[0]):
-        input_hvo = input_hvos[i, :, :] if input_hvos is not None else None
-        output_hvo = output_hvos[i, :, :]
+    for i in range(len(output_hvos)):
+        input_hvo = input_hvos[i] if input_hvos is not None else None
+        output_hvo = output_hvos[i]
         metadata = metadatas[i]
 
         n_outputs_voices = output_hvo.shape[-1] // 3
@@ -157,7 +157,8 @@ def create_triple_streams_template(dataset, identifier,
         if dataset is None:
             styles = ["Unknown"]
         else:
-            styles = sorted(list(set(dataset.collection).union()))
+            collections = [d[7]['collection'] for d in dataset]
+            styles = sorted(list(set(collections).union()))
 
         for style in styles:
             list_of_filter_dicts_for_subsets.append(
@@ -170,9 +171,9 @@ def create_triple_streams_template(dataset, identifier,
     _identifier = identifier
 
     hvo_sequences = compile_into_list_of_hvo_seqs(
-        output_hvos=dataset.output_streams,
-        metadatas=dataset.metadata,
-        input_hvos=dataset.input_grooves if use_input_in_hvo_sequences else None)
+        output_hvos=[d[1] for d in dataset],
+        metadatas=[d[7] for d in dataset],
+        input_hvos=[d[0] for d in dataset] if use_input_in_hvo_sequences else None)
     # create the evaluator
     eval = Evaluator(
         dataset=dataset,
@@ -220,7 +221,7 @@ def load_triple_streams_evaluator_template(
     :return:                        The evaluator template.
     """
 
-    test_dataset = Groove2TripleStreams2BarDataset(
+    test_dataset = get_triplestream_dataset(
         config=config,
         subset_tag=subset_tag,
         use_cached=use_cached,
