@@ -15,9 +15,9 @@ AllAvailableStreams:
     |                           |-------> 32 steps, i.e. 2 bars.
     |                           |-------> 32 steps, i.e. 2 bars.
     |                     |--> 'compiled_single_hvos:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x17533aeb0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x308fe9160>]
     |                     |--> 'split_n_bar_phrases:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x3141317c0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x30ad3d1c0>]
     |-------> ...
 
     |-------> 9413_attempt1 (4 files) 
@@ -33,9 +33,9 @@ AllAvailableStreams:
     |                           |-------> 32 steps, i.e. 2 bars.
     |                           |-------> 32 steps, i.e. 2 bars.
     |                     |--> 'compiled_single_hvos:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x17533a310>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x309bf16d0>]
     |                     |--> 'split_n_bar_phrases:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x3142c1f10>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x30a4167c0>]
     |-------> ...
 
     |-------> 8385_attempt0 (4 files) 
@@ -51,9 +51,9 @@ AllAvailableStreams:
     |                           |-------> 32 steps, i.e. 2 bars.
     |                           |-------> 32 steps, i.e. 2 bars.
     |                     |--> 'compiled_single_hvos:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x17533a1c0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x30d789dc0>]
     |                     |--> 'split_n_bar_phrases:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x3150b9340>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x30b942070>]
     |-------> ...
 
     |-------> 2192_attempt0 (4 files) 
@@ -69,9 +69,9 @@ AllAvailableStreams:
     |                           |-------> 32 steps, i.e. 2 bars.
     |                           |-------> 32 steps, i.e. 2 bars.
     |                     |--> 'compiled_single_hvos:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x17531d880>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x30d789730>]
     |                     |--> 'split_n_bar_phrases:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x316830ee0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x319ccb2b0>]
     |-------> ...
 
     |-------> 4654_attempt0 (4 files) 
@@ -87,9 +87,9 @@ AllAvailableStreams:
     |                           |-------> 32 steps, i.e. 2 bars.
     |                           |-------> 32 steps, i.e. 2 bars.
     |                     |--> 'compiled_single_hvos:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x17531db20>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x30d789670>]
     |                     |--> 'split_n_bar_phrases:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x31413b6a0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x15cb551c0>]
     |-------> ...
 
     |-------> 8072_attempt1 (4 files) 
@@ -105,8 +105,8 @@ AllAvailableStreams:
     |                           |-------> 32 steps, i.e. 2 bars.
     |                           |-------> 32 steps, i.e. 2 bars.
     |                     |--> 'compiled_single_hvos:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x17531ddc0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x3098981c0>]
     |                     |--> 'split_n_bar_phrases:'
-    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x3140352e0>]
+    |                               |-------> [<hvo_sequence.hvo_seq.HVO_Sequence object at 0x319ccb1f0>]
     |-------> ...
 
