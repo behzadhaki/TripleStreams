@@ -1,6 +1,5 @@
 from eval.GrooveEvaluator.src.evaluator import Evaluator
 from eval.GrooveEvaluator.src.evaluator import load_evaluator
 from eval.GrooveEvaluator.templates.main import create_template
-from eval.GrooveEvaluator.templates.main import load_evaluator_template
 from eval.GrooveEvaluator.templates.main import load_triple_streams_evaluator_template
 from eval.GrooveEvaluator.templates.main import stack_groove_with_outputs

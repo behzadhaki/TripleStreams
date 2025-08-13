@@ -1,5 +1,4 @@
 from eval.GrooveEvaluator import Evaluator
-from eval.GrooveEvaluator import load_evaluator
 import os
 from data import Groove2TripleStreams2BarDataset
 import logging
@@ -67,64 +66,6 @@ def create_template(dataset, identifier,
 
     logger.info(f"Template created and cached at {cached_folder}")
     return eval
-
-
-def load_evaluator_template(dataset_setting_json_path, subset_name,
-                            down_sampled_ratio, cached_folder="cached/Evaluators/templates/",
-                            divide_by_genre=True, disable_logging=True):
-    """
-    Load a template for the given dataset and subset. If the template does not exist, it will be created and
-    automatically saved in the cached_folder.
-
-    :param dataset_setting_json_path:  The path to the json file that contains the dataset settings.
-
-    :param subset_name:             The name of the subset to be used. (e.g. "train", "test", "validation")
-    :param down_sampled_ratio:      The ratio of the down-sampled set. (e.g. 0.02)
-    :param cached_folder:           The folder to save the template.
-    :return:                        The evaluator template.
-    """
-    dataset_name = dataset_setting_json_path.split("/")[-1].split(".")[0]
-
-    _identifier = f"_{down_sampled_ratio}_ratio_of_{dataset_name}_{subset_name}" \
-        if down_sampled_ratio is not None else f"complete_set_of_{dataset_name}_{subset_name}"
-    path = os.path.join(cached_folder, f"{_identifier}_evaluator.Eval.bz2")
-
-    if os.path.exists(path):
-        if not disable_logging:
-            logger.info(f"Loading template from {path}")
-        eval = load_evaluator(path)
-
-        test_dataset = Groove2Drum2BarDataset(
-            dataset_setting_json_path=dataset_setting_json_path,
-            subset_tag=subset_name,
-            max_len=32,
-            tapped_voice_idx=2,
-            collapse_tapped_sequence=True,
-            down_sampled_ratio=down_sampled_ratio,
-            move_all_to_gpu=False,
-            use_cached=True
-        )
-
-        eval.dataset = test_dataset
-
-        return eval
-    else:
-        test_dataset = Groove2Drum2BarDataset(
-            dataset_setting_json_path=dataset_setting_json_path,
-            subset_tag=subset_name,
-            max_len=32,
-            tapped_voice_idx=2,
-            collapse_tapped_sequence=True,
-            down_sampled_ratio=down_sampled_ratio,
-            move_all_to_gpu=False,
-            use_cached=True
-        )
-
-        return create_template(
-            dataset=test_dataset,
-            identifier=_identifier,
-            cached_folder=cached_folder,
-            divide_by_genre=divide_by_genre)
 
 def stack_groove_with_outputs(input_hvos, output_hvos):
     if len(input_hvos.shape) == 2:
@@ -197,7 +138,6 @@ def compile_into_list_of_hvo_seqs(output_hvos, metadatas, input_hvos=None, qpms=
     return hvo_sequence_list
 
 def create_triple_streams_template(dataset, identifier,
-                                   cached_folder,
                                    divide_by_collection=True,
                                    use_input_in_hvo_sequences=False):
     """
@@ -255,11 +195,7 @@ def create_triple_streams_template(dataset, identifier,
         disable_tqdm=False
     )
 
-    # m1 = [hs.metadata for hs in hvo_sequences]
 
-    eval.dump(path=cached_folder)
-
-    logger.info(f"Template created and cached at {cached_folder}")
     return eval
 
 
@@ -268,7 +204,6 @@ def load_triple_streams_evaluator_template(
         config,
         subset_tag,
         use_input_in_hvo_sequences,
-        cached_folder,
         downsampled_size=None,
         use_cached=False,
         divide_by_collection=True,
@@ -285,53 +220,15 @@ def load_triple_streams_evaluator_template(
     :return:                        The evaluator template.
     """
 
-    def get_identifier():
-        filename = config['dataset_root_path'].split("/")[-1]
-        filename += "_".join([df.split("_")[0] for df in config['dataset_files']])
-        filename += f"_{subset_tag}_{config['max_len']}_{downsampled_size}" \
-                    f"_{config['n_encoding_control1_tokens']}_{config['encoding_control1_key']}" \
-                    f"_{config['n_encoding_control2_tokens']}_{config['encoding_control2_key']}" \
-                    f"_{config['n_decoding_control1_tokens']}_{config['decoding_control1_key']}" \
-                    f"_{config['n_decoding_control2_tokens']}_{config['decoding_control2_key']}" \
-                    f"_{config['n_decoding_control3_tokens']}_{config['decoding_control3_key']}"
-        filename = filename.replace(" ", "_").replace("|", "_").replace("/", "_").replace("\\", "_").replace("__",
-                                                                                                             "_").replace(
-            "__", "_")
-
-        return filename
-    
-    _identifier = f"_{subset_tag}_{downsampled_size}_samples_from_{get_identifier()}" \
-        if downsampled_size is not None else f"_{subset_tag}_complete_set_of_{get_identifier()}"
-    path = os.path.join(cached_folder, f"{_identifier}.EvalTemp.bz2")
-
-    if os.path.exists(path) and use_cached:
-        print(f"\n\n !!! ============= Using cached evaluator at {path} ============ !!!\n\n")
-        if not disable_logging:
-            logger.info(f"Loading template from {path}")
-        eval = load_evaluator(path)
-
-        test_dataset = Groove2TripleStreams2BarDataset(
-            config=config,
-            subset_tag=subset_tag,
-            use_cached=use_cached,
-            downsampled_size=downsampled_size,
-            force_regenerate=False
+    test_dataset = Groove2TripleStreams2BarDataset(
+        config=config,
+        subset_tag=subset_tag,
+        use_cached=use_cached,
+        downsampled_size=downsampled_size,
         )
 
-        eval.dataset = test_dataset
-
-        return eval
-    else:
-        test_dataset = Groove2TripleStreams2BarDataset(
-            config=config,
-            subset_tag=subset_tag,
-            use_cached=use_cached,
-            downsampled_size=downsampled_size,
-            )
-
-        return create_triple_streams_template(
-            dataset=test_dataset,
-            identifier=_identifier,
-            cached_folder=cached_folder,
-            divide_by_collection=divide_by_collection,
-            use_input_in_hvo_sequences=use_input_in_hvo_sequences)
+    return create_triple_streams_template(
+        dataset=test_dataset,
+        identifier="Evaluator",
+        divide_by_collection=divide_by_collection,
+        use_input_in_hvo_sequences=use_input_in_hvo_sequences)

@@ -1,7 +1,7 @@
 #  Copyright (c) 2022. \n Created by Behzad Haki. behzad.haki@upf.edu
 import torch
 import numpy as np
-from eval.GrooveEvaluator import load_evaluator_template, load_triple_streams_evaluator_template, stack_groove_with_outputs
+from eval.GrooveEvaluator import load_triple_streams_evaluator_template, stack_groove_with_outputs
 from eval.UMAP import UMapper
 import tqdm
 import time
@@ -170,7 +170,6 @@ def get_pianoroll_for_wandb(
             config=config,
             subset_tag=subset_tag,
             downsampled_size=downsampled_size,
-            cached_folder=cached_folder,
             use_cached=use_cached,
             divide_by_collection=divide_by_collection,
             use_input_in_hvo_sequences=True
@@ -247,7 +246,6 @@ def get_hit_scores(
             config=config,
             subset_tag=subset_tag,
             downsampled_size=downsampled_size,
-            cached_folder=cached_folder,
             use_cached=use_cached,
             divide_by_collection=divide_by_collection,
             use_input_in_hvo_sequences=False                    # <------ Must be False here: True will result in higher values when set to false (because we dont predict groove, just predicting streams)
