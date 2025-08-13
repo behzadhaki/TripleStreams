@@ -1305,7 +1305,9 @@ class Groove2TripleStreams2BarDataset(Dataset):
 
 
 
-        self.dataset_setting_json_path = config["dataset_setting_json_path"]
+        self.dataset_root_path = config["dataset_root_path"]
+        self.dataset_files = config["dataset_files"]
+        print(self.dataset_files)
         self.subset_tag = subset_tag
         self.max_len = config["max_len"]
         self.n_encoding_control1_tokens = config["n_encoding_control1_tokens"]
@@ -1318,21 +1320,23 @@ class Groove2TripleStreams2BarDataset(Dataset):
         self.decoding_control2_key = config["decoding_control2_key"]
         self.n_decoding_control3_tokens = config["n_decoding_control3_tokens"]
         self.decoding_control3_key = config["decoding_control3_key"]
-        with open(self.dataset_setting_json_path, "r") as f:
-            self.json = json.load(f)
+        # with open(self.dataset_setting_json_path, "r") as f:
+        #     self.json = json.load(f)
 
         def get_source_compiled_data_dictionary_path():
-            return os.path.join(self.json["compiled_pkl_bz2_path"], self.subset_tag + ".pkl.bz2")
+            return os.path.join(self.dataset_root_path, self.subset_tag)
 
         def get_cached_filepath():
-            dir_ = os.path.join("cached/TorchDatasets", self.json["tag"], self.subset_tag)
+            dir_ = os.path.join("cached/TorchDatasets/", self.dataset_root_path.replace("/", "-"), self.subset_tag)
             os.makedirs(dir_, exist_ok=True)
-            filename = f"{self.subset_tag}_{self.max_len}_{downsampled_size}" \
+            filename = "_".join([df.split("_")[0] for df in self.dataset_files])
+            filename += f"_{self.subset_tag}_{self.max_len}_{downsampled_size}" \
             f"_{self.n_encoding_control1_tokens}_{self.encoding_control1_key}" \
             f"_{self.n_encoding_control2_tokens}_{self.encoding_control2_key}" \
             f"_{self.n_decoding_control1_tokens}_{self.decoding_control1_key}" \
             f"_{self.n_decoding_control2_tokens}_{self.decoding_control2_key}" \
             f"_{self.n_decoding_control3_tokens}_{self.decoding_control3_key}"
+            filename = filename.replace(" ", "_").replace("|", "_").replace("/", "_").replace("\\", "_").replace("__", "_").replace("__", "_")
 
             filename = filename + ".bz2pickle"
             if not os.path.exists(dir_):
@@ -1369,9 +1373,24 @@ class Groove2TripleStreams2BarDataset(Dataset):
             # load pre-stored hvo_sequences or
             #   a portion of them uniformly sampled if down_sampled_ratio is provided
             # ------------------------------------------------------------------------------------------
-            print("++++++++++++++++++ Need to process data from Scratch")
-            loaded_data_dictionary = load_pkl_bz2_dict(get_source_compiled_data_dictionary_path(), allow_pickle_arrays=True)
-            n_samples = len(loaded_data_dictionary["metadata"])
+            n_samples = 0
+            loaded_data_dictionary = {}
+
+            pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files")
+            for dataset_file in pbar:
+                # Update description with current filename
+                pbar.set_description(f"Loading: {dataset_file}")
+                temp = load_pkl_bz2_dict(
+                    os.path.join(get_source_compiled_data_dictionary_path(), dataset_file),
+                    allow_pickle_arrays=True)
+                for k, v in temp.items():
+                    if k not in loaded_data_dictionary:
+                        loaded_data_dictionary[k] = []
+                    if isinstance(v, np.ndarray):
+                        loaded_data_dictionary[k].extend(v.tolist())
+                    else:
+                        loaded_data_dictionary[k].extend(v)
+                n_samples += len(temp["metadata"])
             
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
@@ -1494,43 +1513,11 @@ if __name__ == "__main__":
     # Load Mega dataset as torch.utils.data.Dataset
     from data import Groove2TripleStreams2BarDataset
 
-    config = {
-        'dataset_setting_json_path': "data/dataset_json_settings/TripleStreams0_75_Accent.json",
-
-        'encoding_control1_key': "Flat Out Vs. Input | Hits | Hamming",
-        'encoding_control2_key': "Flat Out Vs. Input | Accent | Hamming",
-        'decoding_control1_key': "Stream 1 Vs. Flat Out | Hits | Hamming",
-        'decoding_control2_key': "Stream 2 Vs. Flat Out | Hits | Hamming",
-        'decoding_control3_key': "Stream 3 Vs. Flat Out | Hits | Hamming",
-
-        'n_encoding_control1_tokens': 20,  # should be 33
-        'n_encoding_control2_tokens': 10,
-        'n_decoding_control1_tokens': 20,
-        'n_decoding_control2_tokens': 10,
-        'n_decoding_control3_tokens': 10,
-
-        'd_model_enc': 128,
-        'd_model_dec': 128,
-        'embedding_size_src': 3,
-        'embedding_size_tgt': 9,
-        'nhead_enc': 4,
-        'nhead_dec': 8,
-        'dim_feedforward_enc': 128,
-        'dim_feedforward_dec': 512,
-        'num_encoder_layers': 3,
-        'num_decoder_layers': 6,
-        'dropout': 0.1,
-        'latent_dim': 16,
-        'max_len': 32,
-        'velocity_dropout': 0.1,
-        'offset_dropout': 0.2,
-
-        'device': 'cpu'
-    }
+    import yaml
 
     # load dataset as torch.utils.data.Dataset
     training_dataset = Groove2TripleStreams2BarDataset(
-        config=config,
+        config=yaml.load(open("TripleStreams_beta_0.5_test.yaml", "r"), Loader=yaml.FullLoader),
         subset_tag="train",
         use_cached=True,
         downsampled_size=None,
@@ -1545,18 +1532,6 @@ if __name__ == "__main__":
         drop_last=False
     )
 
-    ds = loader.dataset  # might be Subset/ConcatDataset, see below
-    cnt = 0
-    all_unique_metadata_keys = []
-    for i in range(len(ds)):
-        s = ds[i]
-        if 'master_id' not in s[-1]:
-            c+=1
-        for k in s[-1].keys():
-            all_unique_metadata_keys.append(k) if k not in all_unique_metadata_keys else None
-
-
-    print(cnt, len(ds))
 
     from model import TripleStreamsVAE
 

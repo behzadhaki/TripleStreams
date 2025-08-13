@@ -207,6 +207,7 @@ def get_pianoroll_for_wandb(
 
     # Get the media from the evaluator
     # -------------------------------
+    evaluator._identifier = "PianoRoll"
     media = evaluator.get_logging_media(
         prepare_for_wandb=True,
         need_hit_scores=kwargs["need_hit_scores"] if "need_hit_scores" in kwargs.keys() else False,

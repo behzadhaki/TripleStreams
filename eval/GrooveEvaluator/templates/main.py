@@ -285,12 +285,25 @@ def load_triple_streams_evaluator_template(
     :param cached_folder:           The folder to save the template.
     :return:                        The evaluator template.
     """
-    dataset_name = config['dataset_setting_json_path'].split("/")[-1].split(".")[0]
 
-    _identifier = f"_{downsampled_size}_samples_from_{dataset_name}_{subset_tag}" \
-        if downsampled_size is not None else f"complete_set_of_{dataset_name}_{subset_tag}"
-    path = os.path.join(cached_folder, f"{_identifier}_evaluator.Eval.bz2")
-    print (path)
+    def get_identifier():
+        filename = config['dataset_root_path'].split("/")[-1]
+        filename += "_".join([df.split("_")[0] for df in config['dataset_files']])
+        filename += f"_{subset_tag}_{config['max_len']}_{downsampled_size}" \
+                    f"_{config['n_encoding_control1_tokens']}_{config['encoding_control1_key']}" \
+                    f"_{config['n_encoding_control2_tokens']}_{config['encoding_control2_key']}" \
+                    f"_{config['n_decoding_control1_tokens']}_{config['decoding_control1_key']}" \
+                    f"_{config['n_decoding_control2_tokens']}_{config['decoding_control2_key']}" \
+                    f"_{config['n_decoding_control3_tokens']}_{config['decoding_control3_key']}"
+        filename = filename.replace(" ", "_").replace("|", "_").replace("/", "_").replace("\\", "_").replace("__",
+                                                                                                             "_").replace(
+            "__", "_")
+
+        return filename
+    
+    _identifier = f"_{subset_tag}_{downsampled_size}_samples_from_{get_identifier()}" \
+        if downsampled_size is not None else f"_{subset_tag}_complete_set_of_{get_identifier()}"
+    path = os.path.join(cached_folder, f"{_identifier}.EvalTemp.bz2")
 
     if os.path.exists(path) and use_cached:
         print(f"\n\n\n============= Using cached evaluator at {path}")
@@ -310,7 +323,7 @@ def load_triple_streams_evaluator_template(
 
         return eval
     else:
-        test_dataset = test_dataset = Groove2TripleStreams2BarDataset(
+        test_dataset = Groove2TripleStreams2BarDataset(
             config=config,
             subset_tag=subset_tag,
             use_cached=use_cached,

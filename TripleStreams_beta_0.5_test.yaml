@@ -1,4 +1,9 @@
-dataset_setting_json_path: "data/dataset_json_settings/TripleStreams0_75_Accent.json"
+dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
+
+dataset_files:
+    - "01_candombe_four_voices.pkl.bz2"
+    - "38_ttd_both-is-and_both_flattened_left_right.pkl.bz2"
+    - "39_ttd_both-is-or_both_flattened_left_right.pkl.bz2"
 
 encoding_control1_key: "Flat Out Vs. Input | Hits | Hamming"
 encoding_control2_key: "Flat Out Vs. Input | Accent | Hamming"
@@ -29,7 +34,7 @@ dropout: 0.1
 embedding_size_src: 3
 embedding_size_tgt: 9
 epochs: 1000
-is_testing: false
+is_testing: true
 latent_dim: 128
 lr: 0.0006369948608989782
 

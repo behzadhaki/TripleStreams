@@ -1,6 +1,0 @@
-{
-  "tag": "TestAccentAt0.75",
-  "beat_division_factor": [4],
-  "drum_mapping_label": "ROLAND_REDUCED_MAPPING",
-  "compiled_pkl_bz2_path": "data/triple_streams/cached/TestAccentAt0.75/training_splits"
-}

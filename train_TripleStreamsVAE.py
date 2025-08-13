@@ -135,8 +135,8 @@ if unknown:
     logger.warning(f"Unknown arguments: {unknown}")
 
 # Disable wandb logging in testing mode
-if args.is_testing:
-    os.environ["WANDB_MODE"] = "disabled"
+# if args.is_testing:
+#     os.environ["WANDB_MODE"] = "disabled"
 
 loaded_via_config = False
 if args.config is not None:
@@ -190,6 +190,8 @@ else:
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
 
+is_testing = hparams.get("is_testing", False) or args.is_testing
+
 # config files without wandb_project specified
 if args.wandb_project is not None:
     hparams["wandb_project"] = args.wandb_project
@@ -228,7 +230,7 @@ if __name__ == "__main__":
         config=config,
         subset_tag="train",
         use_cached=True,
-        downsampled_size=1000 if args.is_testing is True else None,
+        downsampled_size=1000 if is_testing is True else None,
     )
     train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=True)
 
@@ -236,7 +238,7 @@ if __name__ == "__main__":
         config=config,
         subset_tag="test",
         use_cached=True,
-        downsampled_size=1000 if args.is_testing is True else None,
+        downsampled_size=1000 if is_testing is True else None,
     )
 
     test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
