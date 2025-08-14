@@ -245,7 +245,7 @@ def batch_loop(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn,  offs
         # ---------------------------------------------------------------------------------------
         batch_loss_h, hit_mask = calculate_hit_loss(
             hit_logits=h_logits, hit_targets=h_targets, hit_loss_function=hit_loss_fn)
-        batch_loss_h = batch_loss_h * scale_h_loss * 0.0
+        batch_loss_h = batch_loss_h * scale_h_loss
 
         batch_loss_v = calculate_velocity_loss(
             vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn, hit_mask=hit_mask) * scale_v_loss
@@ -278,6 +278,10 @@ def batch_loop(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn,  offs
         loss_recon.append(loss_h[-1] + loss_v[-1] + loss_o[-1])
         loss_total.append(loss_recon[-1] + loss_KL_beta_scaled[-1])
 
+        # Debugging information
+        # ---------------------------------------------------------------------------------------
+        assert not np.isnan(loss_total[-1]), print(batch_data[-2])
+
         # Update the progress bar
         # ---------------------------------------------------------------------------------------
         pbar.set_postfix(
@@ -288,11 +292,6 @@ def batch_loop(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn,  offs
                 "l_o": f"{np.mean(loss_o):.4f}",
                 "l_KL": f"{np.mean(loss_KL):.4f}",
                 })
-
-        # Debugging information
-        # ---------------------------------------------------------------------------------------
-
-        assert not np.isnan(loss_total[-1]), print(batch_data[-2])
 
         # Increment the step counter
         # ---------------------------------------------------------------------------------------
