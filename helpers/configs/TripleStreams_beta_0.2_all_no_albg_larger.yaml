@@ -62,7 +62,7 @@ beta_annealing_start_first_rise_at_epoch: 5
 beta_level: 0.2
 d_model_dec: 128
 d_model_enc: 64
-device: "cuda"
+
 dim_feedforward_dec: 512
 dim_feedforward_enc: 128
 dropout: 0.1

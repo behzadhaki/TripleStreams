@@ -249,7 +249,6 @@ if __name__ == "__main__":
     # Load Training and Testing Datasets and Wrap them in torch.utils.data.Dataloader
     # ----------------------------------------------------------------------------------------------------------
     # only 1% of the dataset is used if we are testing the script (is_testing==True)
-    should_place_all_data_on_cuda = args.force_data_on_cuda and torch.cuda.is_available()
     training_dataset = get_triplestream_dataset(
         config=config,
         subset_tag="train",

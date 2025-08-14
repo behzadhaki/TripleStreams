@@ -63,7 +63,7 @@ beta_annealing_start_first_rise_at_epoch: 5
 beta_level: 0.5
 d_model_dec: 128
 d_model_enc: 16
-device: "cpu"
+
 dim_feedforward_dec: 512
 dim_feedforward_enc: 16
 dropout: 0.1

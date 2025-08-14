@@ -8,7 +8,7 @@ d_model_dec: 128
 d_model_enc: 16
 dataset_json_dir: "data/dataset_json_settings"
 dataset_json_fname: "Balanced_6000_performed.json"
-device: "cuda"
+
 dim_feedforward_dec: 512
 dim_feedforward_enc: 16
 dropout: 0.1
