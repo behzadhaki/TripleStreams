@@ -436,8 +436,6 @@ if __name__ == "__main__":
                     use_cached=True,
                     downsampled_size=3000,
                     predict_using_batch_data_method=predict_using_batch_data,
-                    tag_key="collection",
-                    cached_folder="cached/GrooveEvaluator/templates/HitScores",
                     divide_by_collection=False,
                     previous_evaluator=previous_evaluator_for_hit_scores_train
                 )
@@ -453,8 +451,6 @@ if __name__ == "__main__":
                     use_cached=True,
                     downsampled_size=3000,
                     predict_using_batch_data_method=predict_using_batch_data,
-                    tag_key="collection",
-                    cached_folder="cached/GrooveEvaluator/templates/HitScores",
                     divide_by_collection=False,
                     previous_evaluator=previous_evaluator_for_hit_scores_train
 
@@ -484,34 +480,6 @@ if __name__ == "__main__":
                     need_audio=False
                 )
                 wandb.log(media, commit=False)
-
-                # # umap
-                # logger.info("________Generating UMAP...")
-                # print("\n\n\n\n")
-                #
-                #
-                # media, previous_loaded_dataset_for_umap_test = eval_utils.generate_umap_for_wandb(
-                #     config=config,
-                #     subset_tag='test',
-                #     predict_using_batch_data_method=predict_using_batch_data,
-                #     use_cached=True, # set to false, to use new samples each time
-                #     downsampled_size=1000,   # use only 1000 random samples for the umap
-                #     tag_key="collection",    # visualize (color) based on collection
-                #     previous_loaded_dataset=previous_loaded_dataset_for_umap_test
-                # )
-                # if media is not None:
-                #     wandb.log(media, commit=False)
-                #
-                # media, previous_loaded_dataset_for_umap_train = eval_utils.generate_umap_for_wandb(
-                #     predict_using_batch_data=predict_using_batch_data,
-                #     dataset_setting_json_path=f"{config.dataset_json_dir}/{config.dataset_json_fname}",
-                #     subset_name='train',
-                #     previous_loaded_dataset=previous_loaded_dataset_for_umap_train,
-                #     down_sampled_ratio=0.3,
-                # )
-                # if media is not None:
-                #     wandb.log(media, commit=False)
-
         
 
         # Commit the metrics to wandb
