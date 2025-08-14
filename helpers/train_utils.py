@@ -181,6 +181,7 @@ def calculate_kld_loss(mu, log_var):
     """
     mu = mu.view(mu.shape[0], -1)
     log_var = log_var.view(log_var.shape[0], -1)
+    log_var = torch.clamp(log_var, min=-10, max=10)
     kld_loss = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
 
     return kld_loss.mean()     # batch_size,  time_steps, n_voices
@@ -229,69 +230,78 @@ def batch_loop(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn,  offs
     total_batches = len(dataloader_)
     for batch_count, (batch_data) in (pbar := tqdm.tqdm(enumerate(dataloader_), total=total_batches)):
 
-        if optimizer is None:
-            with torch.no_grad():
-                # Set the model to evaluation mode
+        try:
+            if optimizer is None:
+                with torch.no_grad():
+                    # Set the model to evaluation mode
+                    h_logits, v_logits, o_logits, mu, log_var, latent_z, target_outputs = forward_method(batch_data)
+            else:
+                # Set the model to training mode
                 h_logits, v_logits, o_logits, mu, log_var, latent_z, target_outputs = forward_method(batch_data)
-        else:
-            # Set the model to training mode
-            h_logits, v_logits, o_logits, mu, log_var, latent_z, target_outputs = forward_method(batch_data)
 
-        # Prepare targets for loss calculation
-        h_targets, v_targets, o_targets = torch.split(target_outputs, int(target_outputs.shape[2] / 3), 2)
+            # Prepare targets for loss calculation
+            h_targets, v_targets, o_targets = torch.split(target_outputs, int(target_outputs.shape[2] / 3), 2)
 
-        # Compute losses for the model
-        # ---------------------------------------------------------------------------------------
-        batch_loss_h, hit_mask = calculate_hit_loss(
-            hit_logits=h_logits, hit_targets=h_targets, hit_loss_function=hit_loss_fn)
-        batch_loss_h = batch_loss_h * scale_h_loss
+            # Compute losses for the model
+            # ---------------------------------------------------------------------------------------
+            batch_loss_h, hit_mask = calculate_hit_loss(
+                hit_logits=h_logits, hit_targets=h_targets, hit_loss_function=hit_loss_fn)
+            batch_loss_h = batch_loss_h * scale_h_loss * 0.0
 
-        batch_loss_v = calculate_velocity_loss(
-            vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn, hit_mask=hit_mask) * scale_v_loss
+            batch_loss_v = calculate_velocity_loss(
+                vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn, hit_mask=hit_mask) * scale_v_loss
 
-        batch_loss_o = calculate_offset_loss(
-            offset_logits=o_logits, offset_targets=o_targets, offset_loss_function=offset_loss_fn, hit_mask=hit_mask) * scale_o_loss
+            batch_loss_o = calculate_offset_loss(
+                offset_logits=o_logits, offset_targets=o_targets, offset_loss_function=offset_loss_fn, hit_mask=hit_mask) * scale_o_loss
 
-        batch_loss_KL = calculate_kld_loss(mu, log_var)
+            batch_loss_KL = calculate_kld_loss(mu, log_var)
 
-        batch_loss_KL_Beta_Scaled = batch_loss_KL * kl_beta
+            batch_loss_KL_Beta_Scaled = batch_loss_KL * kl_beta
 
 
-        # Backpropagation and optimization step (if training)
-        # ---------------------------------------------------------------------------------------
-        if optimizer is not None:
-            optimizer.zero_grad()
-            (batch_loss_h + batch_loss_KL_Beta_Scaled).backward(retain_graph=True)
-            batch_loss_v.backward(retain_graph=True)
-            batch_loss_o.backward(retain_graph=True)
-            optimizer.step()
+            # Backpropagation and optimization step (if training)
+            # ---------------------------------------------------------------------------------------
+            if optimizer is not None:
+                optimizer.zero_grad()
+                (batch_loss_h + batch_loss_KL_Beta_Scaled).backward(retain_graph=True)
+                batch_loss_v.backward(retain_graph=True)
+                batch_loss_o.backward(retain_graph=True)
+                optimizer.step()
 
 
-        # Update the per batch loss trackers
-        # -----------------------------------------------------------------
-        loss_h.append(batch_loss_h.item())
-        loss_v.append(batch_loss_v.item())
-        loss_o.append(batch_loss_o.item())
-        loss_KL.append(batch_loss_KL.item())
-        loss_KL_beta_scaled.append(batch_loss_KL_Beta_Scaled.item())
-        loss_recon.append(loss_h[-1] + loss_v[-1] + loss_o[-1])
-        loss_total.append(loss_recon[-1] + loss_KL_beta_scaled[-1])
+            # Update the per batch loss trackers
+            # -----------------------------------------------------------------
+            loss_h.append(batch_loss_h.item())
+            loss_v.append(batch_loss_v.item())
+            loss_o.append(batch_loss_o.item())
+            loss_KL.append(batch_loss_KL.item())
+            loss_KL_beta_scaled.append(batch_loss_KL_Beta_Scaled.item())
+            loss_recon.append(loss_h[-1] + loss_v[-1] + loss_o[-1])
+            loss_total.append(loss_recon[-1] + loss_KL_beta_scaled[-1])
 
-        # Update the progress bar
-        # ---------------------------------------------------------------------------------------
-        pbar.set_postfix(
-            {"l_total_recon_kl": f"{np.mean(loss_total):.4f}",
-                "l_recon": f"{np.mean(loss_recon):.4f}",
-                "l_h": f"{np.mean(loss_h):.4f}",
-                "l_v": f"{np.mean(loss_v):.4f}",
-                "l_o": f"{np.mean(loss_o):.4f}",
-                "l_KL": f"{np.mean(loss_KL):.4f}",
-                })
+            # Update the progress bar
+            # ---------------------------------------------------------------------------------------
+            pbar.set_postfix(
+                {"l_total_recon_kl": f"{np.mean(loss_total):.4f}",
+                    "l_recon": f"{np.mean(loss_recon):.4f}",
+                    "l_h": f"{np.mean(loss_h):.4f}",
+                    "l_v": f"{np.mean(loss_v):.4f}",
+                    "l_o": f"{np.mean(loss_o):.4f}",
+                    "l_KL": f"{np.mean(loss_KL):.4f}",
+                    })
 
-        # Increment the step counter
-        # ---------------------------------------------------------------------------------------
-        if starting_step is not None:
-            starting_step += 1
+            # Debugging information
+            # ---------------------------------------------------------------------------------------
+
+            assert not np.isnan(loss_total[-1])
+
+            # Increment the step counter
+            # ---------------------------------------------------------------------------------------
+            if starting_step is not None:
+                starting_step += 1
+        except AssertionError:
+            print(batch_data[-2])
+
 
     metrics = {
         "loss_total_rec_w_kl": np.mean(loss_total),
