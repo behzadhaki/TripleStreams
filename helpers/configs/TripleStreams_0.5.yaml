@@ -34,12 +34,12 @@ dropout: 0.1
 embedding_size_src: 3
 embedding_size_tgt: 9
 epochs: 1000
-latent_dim: 128
-lr: 0.0006369948608989782
-nhead_enc: 8
+latent_dim: 256
+lr: 0.00006369948608989782
+nhead_enc: 4
 nhead_dec: 8
-num_encoder_layers: 7
-num_decoder_layers: 12
+num_encoder_layers: 4
+num_decoder_layers: 7
 offset_dropout: 0
 velocity_dropout: 0
 optimizer: "adam"
@@ -50,16 +50,16 @@ scale_v_loss: 4
 scale_o_loss: 10
 
 # Step-based beta annealing
-beta_annealing_period_steps: 300           # 25,000 steps per cycle
-beta_annealing_start_first_rise_at_step: 100  # 5,000 steps warmup
-beta_annealing_per_cycle_rising_ratio: 0.5
+beta_annealing_period_steps: 25000           # 25,000 steps per cycle
+beta_annealing_start_first_rise_at_step: 5000  # 5,000 steps warmup
+beta_annealing_per_cycle_rising_ratio: 0.9
 beta_annealing_activated: true
-beta_level: 0.2
+beta_level: 1
 
 # Step-based logging frequencies
-step_log_frequency: 50                        # Log every 50 steps
-step_hit_score_frequency: 1000                # Hit scores every 2000 steps
-step_piano_roll_frequency: 1000               # Piano rolls every 1500 steps
+step_log_frequency: 1                        # Log every 50 steps
+step_hit_score_frequency: 500                # Hit scores every 2000 steps
+step_piano_roll_frequency: 500               # Piano rolls every 1500 steps
 
 # Evaluation settings
 calculate_hit_scores_on_train: true

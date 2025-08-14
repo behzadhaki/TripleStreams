@@ -200,7 +200,7 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
     :param offset_loss_fn: loss function for offsets
     :param optimizer: optimizer for training (None for evaluation)
     :param starting_step: initial step count
-    :param beta_scheduler: StepBasedBetaScheduler instance
+    :param beta_scheduler: AdaptiveBetaScheduler instance
     :param scale_h_loss: scaling factor for hit loss
     :param scale_v_loss: scaling factor for velocity loss
     :param scale_o_loss: scaling factor for offset loss

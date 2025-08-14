@@ -281,7 +281,7 @@ if __name__ == "__main__":
         steps_per_epoch = len(train_dataloader)
         total_steps = steps_per_epoch * config.epochs
 
-        beta_scheduler = train_utils.StepBasedBetaScheduler(
+        beta_scheduler = train_utils.AdaptiveBetaScheduler(
             total_steps=total_steps,
             period_steps=config.beta_annealing_period_steps,
             rise_ratio=config.beta_annealing_per_cycle_rising_ratio,
