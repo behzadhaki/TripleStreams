@@ -535,7 +535,42 @@ class Groove2TripleStream2BarDataset(Dataset):
                 pickle.dump(data_to_dump, ofile)
                 ofile.close()
 
-        # Conver to tensors (patterns as float32 and controls as long)
+        # Safety checks
+        # ------------------------------------------------------------------------------------------
+        def get_invalid_indices(hvo):
+            n_voices = hvo.shape[-1]
+            hits = hvo[:, :, :n_voices]
+            velocities = hvo[:, :, n_voices:2*n_voices]
+            offsets = hvo[:, :, 2*n_voices:3*n_voices]
+            h_invalid_sample_ix, _, _ = np.where((hits > 1) | (hits < 0.0))
+            v_invalid_sample_ix, _, _ = np.where((velocities > 1) | (velocities < 0.0))
+            o_invalid_sample_ix, _, _ = np.where((offsets > 0.5) | (offsets < -0.5))
+            # get the union of all invalid sample indices
+            invalid_sample_ix = set(h_invalid_sample_ix).union(set(v_invalid_sample_ix)).union(set(o_invalid_sample_ix))
+            return invalid_sample_ix
+
+        invalid_indices_input = get_invalid_indices(self.input_grooves)
+        invalid_indices_output = get_invalid_indices(self.output_streams)
+        all_invalid_indices = set(invalid_indices_input).union(set(invalid_indices_output))
+
+        # remove invalid samples
+        if len(all_invalid_indices) > 0:
+            print(f"Found {len(all_invalid_indices)} invalid samples in input grooves. Removing them.")
+            print("Size before removing invalid samples: ", self.input_grooves.shape[0])
+            self.input_grooves = np.delete(self.input_grooves, list(all_invalid_indices), axis=0)
+            self.output_streams = np.delete(self.output_streams, list(all_invalid_indices), axis=0)
+            self.flat_output_streams = np.delete(self.flat_output_streams, list(all_invalid_indices), axis=0)
+            self.encoding_control1_tokens = np.delete(self.encoding_control1_tokens, list(all_invalid_indices), axis=0)
+            self.encoding_control2_tokens = np.delete(self.encoding_control2_tokens, list(all_invalid_indices), axis=0)
+            self.decoding_control1_tokens = np.delete(self.decoding_control1_tokens, list(all_invalid_indices), axis=0)
+            self.decoding_control2_tokens = np.delete(self.decoding_control2_tokens, list(all_invalid_indices), axis=0)
+            self.decoding_control3_tokens = np.delete(self.decoding_control3_tokens, list(all_invalid_indices), axis=0)
+            self.metadata = [self.metadata[ix] for ix in range(len(self.metadata)) if ix not in all_invalid_indices]
+            self.tempos = [self.tempos[ix] for ix in range(len(self.tempos)) if ix not in all_invalid_indices]
+            self.collection = [self.collection[ix] for ix in range(len(self.collection)) if ix not in all_invalid_indices]
+            print("Size after removing invalid samples: ", self.input_grooves.shape[0])
+
+        # Convert to tensors (patterns as float32 and controls as long)
         # ------------------------------------------------------------------------------------------
         self.indices = list(range(len(self.input_grooves)))
         self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
