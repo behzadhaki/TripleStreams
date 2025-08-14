@@ -227,9 +227,6 @@ def get_hit_scores(
         use_cached,
         downsampled_size,
         predict_using_batch_data_method=None,
-        tag_key="collection",
-        previous_loaded_dataset=None,
-        cached_folder="cached/Evaluators/templates/HitScores",
         divide_by_collection=True,   # use collection instead
         previous_evaluator=None):
 
@@ -274,8 +271,8 @@ def get_hit_scores(
     score_dict = {f"Hit_Scores/{key}_mean_{subset_tag}".replace(" ", "_").replace("-", "_"): float(value['mean']) for key, value
                   in sorted(hit_dict.items())}
 
-    score_dict.update({f"Hit_Scores/{key}_std_{subset_tag}".replace(" ", "_").replace("-", "_"): float(value['std']) for key, value
-                  in sorted(hit_dict.items())})
+    # score_dict.update({f"Hit_Scores/{key}_std_{subset_tag}".replace(" ", "_").replace("-", "_"): float(value['std']) for key, value
+    #               in sorted(hit_dict.items())})
 
     end = time.time()
     logger.info(f"Hit Scores Generation for {subset_tag} took {end - start} seconds")
