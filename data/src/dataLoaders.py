@@ -363,7 +363,8 @@ class Groove2TripleStream2BarDataset(Dataset):
                  subset_tag,            # pass "train" or "validation" or "test"
                  use_cached=True,
                  downsampled_size=None,
-                 force_regenerate=False):
+                 force_regenerate=False,
+                 move_all_to_cuda=False):
 
         """
         :param dataset_setting_json_path:   path to the json file containing the dataset settings (see data/dataset_json_settings/4_4_Beats_gmd.json)
@@ -544,15 +545,21 @@ class Groove2TripleStream2BarDataset(Dataset):
         self.decoding_control1_tokens = torch.tensor(self.decoding_control1_tokens, dtype=torch.long)
         self.decoding_control2_tokens = torch.tensor(self.decoding_control2_tokens, dtype=torch.long)
         self.decoding_control3_tokens = torch.tensor(self.decoding_control3_tokens, dtype=torch.long)
-
-        # # the following two are necessary fields for evaluators
-        # for ix, _ in enumerate(self.metadata):
-        #     self.metadata[ix].update({'full_midi_filename': f"{ix}"})
-        #     self.metadata[ix].update({'mast er_id': f"{ix}"})
-        #     self.metadata[ix].update({'style_primary': self.metadata[ix]["collection"]})
-
+        
+        # move_all_to_cuda 
+        # ------------------------------------------------------------------------------------------
+        if move_all_to_cuda and torch.cuda.is_available():
+            device = torch.device("cuda")
+            self.input_grooves = self.input_grooves.to(device)
+            self.output_streams = self.output_streams.to(device)
+            self.flat_output_streams = self.flat_output_streams.to(device)
+            self.encoding_control1_tokens = self.encoding_control1_tokens.to(device)
+            self.encoding_control2_tokens = self.encoding_control2_tokens.to(device)
+            self.decoding_control1_tokens = self.decoding_control1_tokens.to(device)
+            self.decoding_control2_tokens = self.decoding_control2_tokens.to(device)
+            self.decoding_control3_tokens = self.decoding_control3_tokens.to(device)
+            
         self.indices = list(range(len(self.metadata)))
-        # dataLoaderLogger.info(f"Loaded {len(self.input_grooves)} sequences")
 
     def __len__(self):
         return len(self.metadata)
@@ -581,7 +588,8 @@ def get_triplestream_dataset(
         subset_tag,            # pass "train" or "validation" or "test"
         use_cached=True,
         downsampled_size=None,
-        force_regenerate=False):
+        force_regenerate=False,
+        move_all_to_cuda=False):
 
     loaded_dataset = []
 
@@ -603,7 +611,8 @@ def get_triplestream_dataset(
             subset_tag=subset_tag,
             use_cached=use_cached,
             downsampled_size=downsampled_size,
-            force_regenerate=force_regenerate
+            force_regenerate=force_regenerate,
+            move_all_to_cuda=move_all_to_cuda
         )
         loaded_dataset.append(dataset)
     # drop any keys in the metadata that doesnt exist in all datasets

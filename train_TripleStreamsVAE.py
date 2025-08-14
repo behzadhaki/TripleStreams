@@ -91,7 +91,6 @@ parser.add_argument("--beta_annealing_start_first_rise_at_epoch", type=int,
 parser.add_argument("--dropout", type=float, help="Dropout", default=0.4)
 parser.add_argument("--velocity_dropout", type=float, help="velocity_dropout", default=0.4)
 parser.add_argument("--offset_dropout", type=float, help="offset_dropout", default=0.4)
-parser.add_argument("--force_data_on_cuda", type=bool, help="places all training data on cude", default=True)
 parser.add_argument("--epochs", type=int, help="Number of epochs", default=100)
 parser.add_argument("--batch_size", type=int, help="Batch size", default=64)
 parser.add_argument("--lr", type=float, help="Learning rate", default=1e-4)
@@ -107,6 +106,7 @@ parser.add_argument("--scale_o_loss", type=float, help="Scale for offset loss", 
 
 # ----------------------- GPU Settings --------------------------
 parser.add_argument("--device", type=str, help="Device to use for training - either 'cuda', 'cpu' or 'mps'", required=True)
+parser.add_argument("--move_all_to_cuda", type=bool, help="places all training data on cude", default=True)
 
 # ----------------------- Data Parameters -----------------------
 parser.add_argument("--dataset_setting_json_path", type=str,
@@ -245,6 +245,7 @@ if __name__ == "__main__":
     run_name = wandb_run.name
     run_id = wandb_run.id
     collapse_tapped_sequence = (args.embedding_size_src == 3)
+    
     # Load Training and Testing Datasets and Wrap them in torch.utils.data.Dataloader
     # ----------------------------------------------------------------------------------------------------------
     # only 1% of the dataset is used if we are testing the script (is_testing==True)
@@ -254,7 +255,9 @@ if __name__ == "__main__":
         subset_tag="train",
         use_cached=True,
         downsampled_size=1000 if is_testing is True else None,
+        move_all_to_cuda = args.move_all_to_cuda
     )
+
     train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=True)
 
     test_dataset = get_triplestream_dataset(
