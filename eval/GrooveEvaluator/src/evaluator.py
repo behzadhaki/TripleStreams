@@ -565,16 +565,8 @@ class Evaluator:
                 "Relative - Precision": Precision_array,
                 "Relative - Recall": Recall_array,
                 "Relative - F1_Score": F1_Score_array,
-                "Relative - TPR": TPR_array,
-                "Relative - FPR": FPR_array,
-                "Relative - PPV": PPV_array,
-                "Relative - FDR": FDR_array,
-                "Relative - Ratio of Silences Predicted as Hits": FP_over_N,
-                "Relative - Ratio of Hits Predicted as Silences": FN_over_P,
                 "Hit Count - Ground Truth": Actual_P_array,
                 "Hit Count - Total Predictions": Total_predicted_array,
-                "Hit Count - True Predictions (Matching GMD)": TP_array,
-                "Hit Count - False Predictions (Different from GMD)": FP_array,
             })
         else:
             hit_scores_dict.update({
