@@ -21,7 +21,7 @@ import io
 import numpy as np
 
 logging.basicConfig(level=logging.DEBUG)
-dataLoaderLogger = logging.getLogger("data.Base.dataLoaders")
+dataLoaderLogger = logging.getLogger("dloader")
 
 
 
@@ -592,10 +592,10 @@ def get_triplestream_dataset(
     except:
         cfg_dict = config
 
-    pbar = tqdm.tqdm(cfg_dict["dataset_files"], desc="Loading dataset files")
-    for dataset_file in cfg_dict["dataset_files"]:
-        pbar.set_description(dataset_file)
-        dataLoaderLogger.info(f"Loading dataset file: {dataset_file}")
+    pbar = tqdm.tqdm(cfg_dict["dataset_files"], desc="Loading dataset files") if len(cfg_dict["dataset_files"]) > 1 else cfg_dict["dataset_files"]
+    for dataset_file in pbar:
+        if len(cfg_dict["dataset_files"]) > 1:
+            pbar.set_description(dataset_file)
         new_config = cfg_dict.copy()
         new_config["dataset_files"] = [dataset_file]
         dataset = Groove2TripleStream2BarDataset(
@@ -608,9 +608,10 @@ def get_triplestream_dataset(
         loaded_dataset.append(dataset)
     # drop any keys in the metadata that doesnt exist in all datasets
     common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in loaded_dataset))
+    dataLoaderLogger.info(f"Loaded {len(loaded_dataset)} datasets:")
     for ix, ds in enumerate(loaded_dataset):
         ds.metadata = [{k: v for k, v in sample.items() if k in common_keys} for sample in ds.metadata]
-        dataLoaderLogger.info(f"Loaded dataset {ix} of {len(loaded_dataset)} datasets with {len(loaded_dataset[0])} samples each")
+        dataLoaderLogger.info(f"\t {ix} : {cfg_dict['dataset_files'][ix]} --> {len(loaded_dataset[ix])} samples")
 
     return ConcatDataset(loaded_dataset)
 
