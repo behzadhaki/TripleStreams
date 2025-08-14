@@ -3,6 +3,8 @@ dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 dataset_files:
     - "25_lmd_brass_drum_guitar_piano.pkl.bz2"
 
+prepend_control_tokens: true
+
 encoding_control1_key: "Flat Out Vs. Input | Hits | Hamming"
 encoding_control2_key: "Flat Out Vs. Input | Accent | Hamming"
 decoding_control1_key: "Stream 1 Vs. Flat Out | Hits | Hamming"

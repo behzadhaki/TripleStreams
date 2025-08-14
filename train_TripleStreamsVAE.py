@@ -58,6 +58,7 @@ parser.add_argument("--max_len_dec", type=int, help="Maximum length of the decod
 parser.add_argument("--latent_dim", type=int, help="Overall Dimension of the latent space", default=16)
 
 # ---------------------- Control Parameters -----------------------
+parser.add_argument("--prepend_control_tokens", type=bool, help="Prepend controls rather than summing", default=False)
 parser.add_argument("--encoding_control1_key", type=str, help="control 1 applied to encoder", 
                     default="Flat Out Vs. Input | Hits | Hamming")
 parser.add_argument("--encoding_control2_key", type=str, help="control 2 applied to encoder", 
@@ -78,7 +79,6 @@ parser.add_argument("--n_decoding_control2_tokens", type=int,
                     help="Nubmer of tokens", default=10)
 parser.add_argument("--n_decoding_control3_tokens", type=int,
                     help="Nubmer of tokens", default=10)
-
 # ----------------------- Loss Parameters -----------------------
 parser.add_argument("--beta_annealing_per_cycle_rising_ratio", type=float,
                     help="rising ratio in each cycle to anneal beta", default=1)
@@ -171,6 +171,7 @@ else:
         latent_dim=args.latent_dim,
         max_len_enc=args.max_len_enc,
         max_len_dec=args.max_len_dec,
+        prepend_control_tokens=args.prepend_control_tokens,
         encoding_control1_key=args.encoding_control1_key,
         encoding_control2_key=args.encoding_control2_key,
         decoding_control1_key=args.decoding_control1_key,
