@@ -60,8 +60,29 @@ ROLAND_REDUCED_MAPPING = {
     "TOM_2_MID": [47, 45],
     "TOM_1_HI": [50, 48],
     "CRASH": [49, 52, 55, 57],
-    "RIDE":  [51, 53, 59]
+    "RIDE":  [51, 53, 59],
 }
+
+# MAGENTA MAPPING
+ROLAND_REDUCED_MAPPING_With_Bongos = {
+    "Left_Hand_Bongo": [64],
+    "Right_Hand_Bongo": [63],
+    "KICK": [36, 35],
+    "SNARE": [38, 37, 40, 39],
+    "HH_CLOSED": [42, 22, 44],
+    "HH_OPEN": [46, 26],
+    "TOM_3_LO": [43, 58, 41],
+    "TOM_2_MID": [47, 45],
+    "TOM_1_HI": [50, 48],
+    "CRASH": [49, 52, 55, 57],
+    "RIDE":  [51, 53, 59],
+}
+
+BONGOSERRO_MAPPING = {
+    "Left_Hand_Bongo": [64],
+    "Right_Hand_Bongo": [63]
+}
+
 
 # GrooveToolbox 5 Part Kit Mappings
 Groove_Toolbox_5Part_keymap = {
