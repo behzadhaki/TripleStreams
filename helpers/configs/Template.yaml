@@ -2,6 +2,7 @@
 dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 dataset_files:
     - 01_candombe_four_voices.pkl.bz2                               # - 02_elbg_both_flattened_left_right.pkl.bz2
+    - 02_elbg_both_flattened_left_right.pkl.bz2
     - 03_groove_midi_crash_hhclosed_hhopen_ride.pkl.bz2
     - 04_groove_midi_hh_kick_snare_toms.pkl.bz2
     - 05_groove_midi_hi_lo_mid_ride.pkl.bz2
