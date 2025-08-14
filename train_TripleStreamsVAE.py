@@ -105,6 +105,9 @@ parser.add_argument("--scale_h_loss", type=float, help="Scale for hit loss", def
 parser.add_argument("--scale_v_loss", type=float, help="Scale for velocity loss", default=1)
 parser.add_argument("--scale_o_loss", type=float, help="Scale for offset loss", default=1)
 
+# ----------------------- GPU Settings --------------------------
+parser.add_argument("--device", type=str, help="Device to use for training - either 'cuda', 'cpu' or 'mps'", required=True)
+
 # ----------------------- Data Parameters -----------------------
 parser.add_argument("--dataset_setting_json_path", type=str,
                     help="Path to the folder hosting the dataset json file",
@@ -144,6 +147,9 @@ if args.config is not None:
         hparams = yaml.safe_load(f)
         if "wandb_project" not in hparams.keys():
             hparams["wandb_project"] = args.wandb_project
+        if "device" in hparams.keys():
+            logger.warning(f"\n\nremove device from config file. Using CLI argument instead: {args.device}\n\n")
+        hparams["device"] = args.device # ignoring device in config file
         loaded_via_config = True
 else:
     d_model_dec = int(float(args.d_model_enc) * float(args.d_model_dec_ratio))
@@ -186,8 +192,17 @@ else:
         optimizer=args.optimizer,
         is_testing=args.is_testing,
         dataset_setting_json_path=args.dataset_setting_json_path,
-        device="cuda" if torch.cuda.is_available() else "cpu"
+        device=args.device
     )
+
+# only allow mps and cpu if mps is available. and only allow cuda if cuda is available
+if args.device == 'mps' and not torch.has_mps:
+    logger.warning("\n\n MPS is not available. Falling back to CPU.")
+    hparams["device"] = 'cpu'
+
+if args.device == 'cuda' and not torch.cuda.is_available():
+    logger.warning("\n\n CUDA is not available. Falling back to CPU.")
+    hparams["device"] = 'cpu'
 
 is_testing = hparams.get("is_testing", False) or args.is_testing
 
@@ -227,7 +242,6 @@ if __name__ == "__main__":
     # Reset config to wandb.config (in case of sweeping with YAML necessary)
     # ----------------------------------------------------------------------------------------------------------
     config = wandb.config
-    config.device = config.device if torch.cuda.is_available() else 'cpu'
     run_name = wandb_run.name
     run_id = wandb_run.id
     collapse_tapped_sequence = (args.embedding_size_src == 3)
