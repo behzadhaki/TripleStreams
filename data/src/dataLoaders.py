@@ -538,7 +538,7 @@ class Groove2TripleStream2BarDataset(Dataset):
         # Safety checks
         # ------------------------------------------------------------------------------------------
         def get_invalid_indices(hvo):
-            n_voices = hvo.shape[-1]
+            n_voices = hvo.shape[-1] // 3
             hits = hvo[:, :, :n_voices]
             velocities = hvo[:, :, n_voices:2*n_voices]
             offsets = hvo[:, :, 2*n_voices:3*n_voices]
@@ -657,7 +657,7 @@ class Groove2TripleStream2BarDataset(Dataset):
             )
             datasets.append(dataset)
 
-        # Drop metadata keys that don't exist in all datasets (like in get_triplestream_dataset)
+
         common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in datasets))
         dataLoaderLogger.info(f"Loaded {len(datasets)} datasets:")
         for ix, ds in enumerate(datasets):
