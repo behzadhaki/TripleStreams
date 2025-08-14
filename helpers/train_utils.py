@@ -3,6 +3,7 @@ import numpy as np
 import tqdm
 
 from logging import getLogger
+
 logger = getLogger("train_utils")
 logger.setLevel("DEBUG")
 
@@ -10,63 +11,22 @@ logger.setLevel("DEBUG")
 class FocalLoss(torch.nn.Module):
     """
     Focal Loss for binary classification problems to address class imbalance.
-
-    Focal Loss=−α(1−pt)^γ * log(pt)
-
-    Attributes:
-    -----------
-    alpha : float
-        A weighting factor for balancing the importance of positive/negative classes.
-        Typically in the range [0, 1]. Higher values of alpha give more weight to the positive class.
-
-    gamma : float
-        The focusing parameter. Gamma >= 0. Reduces the relative loss for well-classified examples,
-        putting more focus on hard, misclassified examples. Higher values of gamma make the model focus more
-        on hard examples.
-
-    Methods:
-    --------
-    forward(inputs, targets):
-        Compute the focal loss for given inputs and targets.
-
-    Parameters:
-    -----------
-    inputs : torch.Tensor
-        The logits (raw model outputs) of shape (N, *) where * means any number of additional dimensions.
-        For binary classification, this is typically of shape (N, 1).
-
-    targets : torch.Tensor
-        The ground truth values (labels) with the same shape as inputs.
-
-    Returns:
-    --------
-    torch.Tensor
-        The computed focal loss.
-
-    Example:
-    --------
-    criterion = FocalLoss(alpha=0.25, gamma=2.0)
-    loss = criterion(logits, targets)
     """
 
     def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
-
         super(FocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
 
     def forward(self, inputs, targets):
-        """
-        Forward pass for computing the focal loss.
-        """
+        """Forward pass for computing the focal loss."""
         BCE_loss = torch.nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-BCE_loss)  # Computes the probability of the correct class (Prevents nans when probability 0)
+        pt = torch.exp(-BCE_loss)
         F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
 
         if self.reduction is None:
             return F_loss
-
         if self.reduction.lower() == 'mean':
             return torch.mean(F_loss)
         elif self.reduction.lower() == 'sum':
@@ -77,82 +37,92 @@ class FocalLoss(torch.nn.Module):
 
 class DiceLoss(torch.nn.Module):
     def __init__(self, smooth=1., reduction='mean'):
-
         super(DiceLoss, self).__init__()
         self.smooth = smooth
 
     def forward(self, h_logits, h_targets):
-        # Flatten label and prediction tensors
         h_probs = torch.sigmoid(h_logits).reshape(-1)
         targets = h_targets.reshape(-1)
-
         intersection = (h_probs * targets).sum()
         dice = (2. * intersection + self.smooth) / (h_probs.sum() + targets.sum() + self.smooth)
-
         return 1 - dice
 
 
-def generate_beta_curve(n_epochs, period_epochs, rise_ratio, start_first_rise_at_epoch=0):
-    """
-    Generate a beta curve for the given parameters
+class StepBasedBetaScheduler:
+    """Beta annealing scheduler that works with training steps"""
 
-    Args:
-        n_epochs:            The number of epochs to generate the curve for
-        period_epochs:       The period of the curve in epochs (for multiple cycles)
-        rise_ratio:         The ratio of the period to be used for the rising part of the curve
-        start_first_rise_at_epoch:  The epoch to start the first rise at (useful for warmup)
+    def __init__(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0, beta_level=1.0):
+        self.beta_curve = self.generate_beta_curve_step_based(
+            total_steps, period_steps, rise_ratio, start_first_rise_at_step
+        )
+        self.beta_level = beta_level
+        self.current_step = 0
 
-    Returns:
+    def generate_beta_curve_step_based(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0):
+        """Generate a beta curve based on training steps"""
 
-    """
-    def f(x, K):
-        if x == 0:
-            return 0
-        elif x == K:
-            return 1
-        else:
-            return 1 / (1 + np.exp(-10 * (x - K / 2) / K))
+        def f(x, K):
+            if x == 0:
+                return 0
+            elif x == K:
+                return 1
+            else:
+                return 1 / (1 + np.exp(-10 * (x - K / 2) / K))
 
-    def generate_rising_curve(K):
-        curve = []
-        for i in range(K):
-            curve.append(f(i, K - 1))
-        return np.array(curve)
+        def generate_rising_curve(K):
+            curve = []
+            for i in range(K):
+                curve.append(f(i, K - 1))
+            return np.array(curve)
 
-    def generate_single_beta_cycle(period, rise_ratio):
-        cycle = np.ones(period)
+        def generate_single_beta_cycle(period, rise_ratio):
+            cycle = np.ones(period)
+            curve_steps = int(period * rise_ratio)
+            rising_curve = generate_rising_curve(curve_steps)
+            cycle[:rising_curve.shape[0]] = rising_curve[:cycle.shape[0]]
+            return cycle
 
-        curve_steps_in_epochs = int(period * rise_ratio)
+        beta_curve = np.zeros(start_first_rise_at_step)
+        effective_steps = total_steps - start_first_rise_at_step
+        n_cycles = np.ceil(effective_steps / period_steps)
 
-        rising_curve = generate_rising_curve(curve_steps_in_epochs)
+        single_cycle = generate_single_beta_cycle(period_steps, rise_ratio)
 
-        cycle[:rising_curve.shape[0]] = rising_curve[:cycle.shape[0]]
+        for c in np.arange(int(n_cycles)):
+            beta_curve = np.append(beta_curve, single_cycle)
 
-        return cycle
+        return beta_curve[:total_steps]
 
-    beta_curve = np.zeros((start_first_rise_at_epoch))
-    effective_epochs = n_epochs - start_first_rise_at_epoch
-    n_cycles = np.ceil(effective_epochs / period_epochs)
+    def get_beta(self, step=None):
+        """Get beta value for current or specified step"""
+        if step is None:
+            step = self.current_step
 
-    single_cycle = generate_single_beta_cycle(period_epochs, rise_ratio)
+        if step >= len(self.beta_curve):
+            return self.beta_level
 
-    for c in np.arange(n_cycles):
-        beta_curve = np.append(beta_curve, single_cycle)
+        return self.beta_curve[step] * self.beta_level
 
-    return beta_curve[:n_epochs]
+    def step(self):
+        """Increment the step counter"""
+        self.current_step += 1
+        return self.get_beta()
 
 
 def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function):
-    assert isinstance(hit_loss_function, torch.nn.BCEWithLogitsLoss) or isinstance(hit_loss_function, FocalLoss) or isinstance(hit_loss_function, DiceLoss), f"hit_loss_function must be an instance of torch.nn.BCEWithLogitsLoss or FocalLoss or DiceLoss. Got {type(hit_loss_function)}"
-    loss_h = hit_loss_function(hit_logits, hit_targets)           # batch, time steps, voices (10 is a scaling factor to match the other losses)
+    assert isinstance(hit_loss_function, torch.nn.BCEWithLogitsLoss) or isinstance(hit_loss_function,
+                                                                                   FocalLoss) or isinstance(
+        hit_loss_function,
+        DiceLoss), f"hit_loss_function must be an instance of torch.nn.BCEWithLogitsLoss or FocalLoss or DiceLoss. Got {type(hit_loss_function)}"
+    loss_h = hit_loss_function(hit_logits, hit_targets)
     hit_mask = None
     if hit_loss_function.reduction == 'none':
         # put more weight on the hits
-        hit_mask = (hit_targets > 0).float() * 3 + 1 # hits weighted almost 10 times more than the misses (in reality, 4 to 1 ratio)
+        hit_mask = (hit_targets > 0).float() * 3 + 1  # hits weighted almost 4x more than misses
         loss_h = loss_h * hit_mask
         loss_h = loss_h.mean()
 
-    return loss_h, hit_mask       # batch_size,  time_steps, n_voices
+    return loss_h, hit_mask
 
 
 def calculate_velocity_loss(vel_logits, vel_targets, vel_loss_function, hit_mask=None):
@@ -165,7 +135,6 @@ def calculate_velocity_loss(vel_logits, vel_targets, vel_loss_function, hit_mask
 
 def calculate_offset_loss(offset_logits, offset_targets, offset_loss_function, hit_mask=None):
     offset_activated = torch.tanh(offset_logits)
-
     if hit_mask is None:
         return offset_loss_function(offset_activated, offset_targets).mean()
     else:
@@ -173,93 +142,88 @@ def calculate_offset_loss(offset_logits, offset_targets, offset_loss_function, h
 
 
 def calculate_kld_loss(mu, log_var):
-    """ calculate the KLD loss for the given mu and log_var values against a standard normal distribution
-    :param mu:  (torch.Tensor)  the mean values of the latent space
-    :param log_var: (torch.Tensor)  the log variance values of the latent space
-    :return:    kld_loss (torch.Tensor)  the KLD loss value (unreduced) shape: (batch_size,  time_steps, n_voices)
-
-    """
+    """Calculate the KLD loss for the given mu and log_var values against a standard normal distribution"""
     mu = mu.view(mu.shape[0], -1)
     log_var = log_var.view(log_var.shape[0], -1)
     log_var = torch.clamp(log_var, min=-10, max=10)
     kld_loss = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
+    return kld_loss.mean()
 
-    return kld_loss.mean()     # batch_size,  time_steps, n_voices
 
-
-def batch_loop(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn,  offset_loss_fn,
-               optimizer=None, starting_step=None, kl_beta=1.0, scale_h_loss=1.0, scale_v_loss=1.0, scale_o_loss=1.0):
-
+def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
+                          optimizer=None, starting_step=0, beta_scheduler=None,
+                          scale_h_loss=1.0, scale_v_loss=1.0, scale_o_loss=1.0,
+                          log_frequency=100, eval_callbacks=None, is_training=True, wandb_log=True):
     """
-    This function iteratively loops over the given dataloader and calculates the loss for each batch. If an optimizer is
-    provided, it will also perform the backward pass and update the model parameters. The loss values are accumulated
-    and returned at the end of the loop.
+    Step-based batch loop with integrated logging and evaluation callbacks
 
-    **Can be used for both training and testing. In testing however, backpropagation will not be performed**
-
-
-    :param dataloader_:     (torch.utils.data.DataLoader)  dataloader for the dataset
-    :param forward_method:  (function)  the forward method of the model (takes care of io extraction and model forward pass, also returns the targets)
-    :param hit_loss_fn:     (str)  "bce"
-    :param velocity_loss_fn:    (str)  "bce"
-    :param offset_loss_fn:  (str)  "HuberLoss"
-    :param optimizer:   (torch.optim.Optimizer)  the optimizer to use for the model
-    :param starting_step:   (int)  the starting step for the optimizer
-    :param kl_beta: (float)  the beta value for the KLD loss
-    :param scale_h_loss: (float)  the scaling factor for the hit loss
-    :param scale_v_loss: (float)  the scaling factor for the velocity loss
-    :param scale_o_loss: (float)  the scaling factor for the offset loss
-    :return:    (dict)  a dictionary containing the loss values for the current batch
-
-                metrics = {
-                    "loss_total": np.mean(loss_total),
-                    "loss_h": np.mean(loss_h),
-                    "loss_v": np.mean(loss_v),
-                    "loss_o": np.mean(loss_o),
-                    "loss_KL": np.mean(loss_KL)}
-
-                (int)  the current step of the optimizer (if provided)
+    :param dataloader_: torch.utils.data.DataLoader for the dataset
+    :param forward_method: function that handles model forward pass
+    :param hit_loss_fn: loss function for hits
+    :param velocity_loss_fn: loss function for velocities
+    :param offset_loss_fn: loss function for offsets
+    :param optimizer: optimizer for training (None for evaluation)
+    :param starting_step: initial step count
+    :param beta_scheduler: StepBasedBetaScheduler instance
+    :param scale_h_loss: scaling factor for hit loss
+    :param scale_v_loss: scaling factor for velocity loss
+    :param scale_o_loss: scaling factor for offset loss
+    :param log_frequency: how often to log metrics to wandb
+    :param eval_callbacks: dict of evaluation functions to run at specified frequencies
+    :param is_training: whether this is training or evaluation
+    :param wandb_log: whether to log to wandb
+    :return: metrics dict and final step count
     """
+    import wandb
 
-    # Prepare the metric trackers for the new epoch
-    # ------------------------------------------------------------------------------------------
-    loss_total, loss_recon, loss_h, loss_v, loss_o, loss_KL, loss_KL_beta_scaled = [], [], [], [], [], [], []
+    # Prepare metric trackers
+    step_metrics = {
+        'loss_total': [], 'loss_h': [], 'loss_v': [], 'loss_o': [],
+        'loss_KL': [], 'loss_recon': [], 'kl_beta': []
+    }
 
-    # Iterate over batches
-    # ------------------------------------------------------------------------------------------
     total_batches = len(dataloader_)
-    for batch_count, (batch_data) in (pbar := tqdm.tqdm(enumerate(dataloader_), total=total_batches)):
+    current_step = starting_step
 
+    # Default evaluation callbacks if none provided
+    if eval_callbacks is None:
+        eval_callbacks = {}
+
+    for batch_count, batch_data in (pbar := tqdm.tqdm(enumerate(dataloader_), total=total_batches)):
+
+        # Get current beta value
+        if beta_scheduler is not None:
+            kl_beta = beta_scheduler.get_beta(current_step)
+        else:
+            kl_beta = 1.0
+
+        # Forward pass
         if optimizer is None:
             with torch.no_grad():
-                # Set the model to evaluation mode
                 h_logits, v_logits, o_logits, mu, log_var, latent_z, target_outputs = forward_method(batch_data)
         else:
-            # Set the model to training mode
             h_logits, v_logits, o_logits, mu, log_var, latent_z, target_outputs = forward_method(batch_data)
 
         # Prepare targets for loss calculation
         h_targets, v_targets, o_targets = torch.split(target_outputs, int(target_outputs.shape[2] / 3), 2)
 
-        # Compute losses for the model
-        # ---------------------------------------------------------------------------------------
+        # Compute losses
         batch_loss_h, hit_mask = calculate_hit_loss(
             hit_logits=h_logits, hit_targets=h_targets, hit_loss_function=hit_loss_fn)
         batch_loss_h = batch_loss_h * scale_h_loss
 
         batch_loss_v = calculate_velocity_loss(
-            vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn, hit_mask=hit_mask) * scale_v_loss
+            vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn,
+            hit_mask=hit_mask) * scale_v_loss
 
         batch_loss_o = calculate_offset_loss(
-            offset_logits=o_logits, offset_targets=o_targets, offset_loss_function=offset_loss_fn, hit_mask=hit_mask) * scale_o_loss
+            offset_logits=o_logits, offset_targets=o_targets, offset_loss_function=offset_loss_fn,
+            hit_mask=hit_mask) * scale_o_loss
 
         batch_loss_KL = calculate_kld_loss(mu, log_var)
-
         batch_loss_KL_Beta_Scaled = batch_loss_KL * kl_beta
 
-
-        # Backpropagation and optimization step (if training)
-        # ---------------------------------------------------------------------------------------
+        # Backpropagation (only if training)
         if optimizer is not None:
             optimizer.zero_grad()
             (batch_loss_h + batch_loss_KL_Beta_Scaled).backward(retain_graph=True)
@@ -267,83 +231,81 @@ def batch_loop(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn,  offs
             batch_loss_o.backward(retain_graph=True)
             optimizer.step()
 
+        # Store metrics
+        current_loss_h = batch_loss_h.item()
+        current_loss_v = batch_loss_v.item()
+        current_loss_o = batch_loss_o.item()
+        current_loss_KL = batch_loss_KL.item()
+        current_loss_recon = current_loss_h + current_loss_v + current_loss_o
+        current_loss_total = current_loss_recon + batch_loss_KL_Beta_Scaled.item()
 
-        # Update the per batch loss trackers
-        # -----------------------------------------------------------------
-        loss_h.append(batch_loss_h.item())
-        loss_v.append(batch_loss_v.item())
-        loss_o.append(batch_loss_o.item())
-        loss_KL.append(batch_loss_KL.item())
-        loss_KL_beta_scaled.append(batch_loss_KL_Beta_Scaled.item())
-        loss_recon.append(loss_h[-1] + loss_v[-1] + loss_o[-1])
-        loss_total.append(loss_recon[-1] + loss_KL_beta_scaled[-1])
+        # Add to running averages
+        step_metrics['loss_h'].append(current_loss_h)
+        step_metrics['loss_v'].append(current_loss_v)
+        step_metrics['loss_o'].append(current_loss_o)
+        step_metrics['loss_KL'].append(current_loss_KL)
+        step_metrics['loss_recon'].append(current_loss_recon)
+        step_metrics['loss_total'].append(current_loss_total)
+        step_metrics['kl_beta'].append(kl_beta)
 
-        # Debugging information
-        # ---------------------------------------------------------------------------------------
-        assert not np.isnan(loss_total[-1]), print(batch_data[-2])
+        # Step-based logging to wandb
+        if wandb_log and current_step % log_frequency == 0:
+            recent_steps = min(log_frequency, len(step_metrics['loss_total']))
+            step_avg_metrics = {
+                f"Step_Metrics/{'train' if is_training else 'eval'}_{k}": np.mean(v[-recent_steps:])
+                for k, v in step_metrics.items()
+            }
+            step_avg_metrics['global_step'] = current_step
+            wandb.log(step_avg_metrics, step=current_step)
 
-        # Update the progress bar
-        # ---------------------------------------------------------------------------------------
-        pbar.set_postfix(
-            {"l_total_recon_kl": f"{np.mean(loss_total):.4f}",
-                "l_recon": f"{np.mean(loss_recon):.4f}",
-                "l_h": f"{np.mean(loss_h):.4f}",
-                "l_v": f"{np.mean(loss_v):.4f}",
-                "l_o": f"{np.mean(loss_o):.4f}",
-                "l_KL": f"{np.mean(loss_KL):.4f}",
-                })
+        # Run evaluation callbacks at specified frequencies
+        for callback_name, callback_config in eval_callbacks.items():
+            if current_step % callback_config['frequency'] == 0 and current_step > 0:
+                try:
+                    callback_metrics = callback_config['function'](current_step)
+                    if callback_metrics and wandb_log:
+                        wandb.log(callback_metrics, step=current_step)
+                except Exception as e:
+                    logger.warning(f"Evaluation callback {callback_name} failed at step {current_step}: {e}")
 
-        # Increment the step counter
-        # ---------------------------------------------------------------------------------------
-        if starting_step is not None:
-            starting_step += 1
+        # Update progress bar
+        pbar.set_postfix({
+            "step": current_step,
+            "beta": f"{kl_beta:.4f}",
+            "l_total": f"{current_loss_total:.4f}",
+            "l_h": f"{current_loss_h:.4f}",
+            "l_v": f"{current_loss_v:.4f}",
+            "l_o": f"{current_loss_o:.4f}",
+            "l_KL": f"{current_loss_KL:.4f}",
+        })
 
-    metrics = {
-        "loss_total_rec_w_kl": np.mean(loss_total),
-        "loss_h": np.mean(loss_h),
-        "loss_v": np.mean(loss_v),
-        "loss_o": np.mean(loss_o),
-        "loss_KL": np.mean(loss_KL),
-        "loss_KL_beta_scaled": np.mean(loss_KL_beta_scaled),
-        "loss_recon": np.mean(loss_recon)
+        current_step += 1
+        # Only increment beta scheduler during training to avoid conflicts
+        if beta_scheduler is not None and is_training:
+            beta_scheduler.step()
+
+    # Return aggregated metrics for the entire pass
+    aggregated_metrics = {
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_total_rec_w_kl": np.mean(step_metrics['loss_total']),
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_h": np.mean(step_metrics['loss_h']),
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_v": np.mean(step_metrics['loss_v']),
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_o": np.mean(step_metrics['loss_o']),
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_KL": np.mean(step_metrics['loss_KL']),
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_recon": np.mean(step_metrics['loss_recon'])
     }
 
-    if starting_step is not None:
-        return metrics, starting_step
+    # Only return updated step counter for training
+    if is_training:
+        return aggregated_metrics, current_step
     else:
-        return metrics
+        return aggregated_metrics, starting_step  # Don't change step counter for test
 
 
-def train_loop(train_dataloader, forward_method,
-               optimizer, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
-               starting_step, kl_beta, scale_h_loss, scale_v_loss, scale_o_loss):
-    """
-    This function performs the training loop for the given model and dataloader. It will iterate over the dataloader
-    and perform the forward and backward pass for each batch. The loss values are accumulated and the average is
-    returned at the end of the loop.
-
-    :param train_dataloader:    (torch.utils.data.DataLoader)  dataloader for the training dataset
-    :param model:  (GenreGlobalDensityWithVoiceMutesVAE)  the model
-    :param batch_data_extractor:  (function)  a function to extract the batch data
-    :param optimizer:  (torch.optim.Optimizer)  the optimizer to use for the model (sgd or adam)
-    :param hit_loss_fn:     ("dice" or torch.nn.BCEWithLogitsLoss)
-    :param velocity_loss_fn:  (torch.nn.BCEWithLogitsLoss)
-    :param offset_loss_fn:      (torch.nn.HuberLoss)
-    :param device:  (str)  the device to use for the model
-    :param starting_step:   (int)  the starting step for the optimizer
-    :param kl_beta: (float)  the beta value for the KL loss (maybe flat or annealed)
-
-    :return:    (dict)  a dictionary containing the loss values for the current batch
-
-            metrics = {
-                    "train/loss_total": np.mean(loss_total),
-                    "train/loss_h": np.mean(loss_h),
-                    "train/loss_v": np.mean(loss_v),
-                    "train/loss_o": np.mean(loss_o),
-                    "train/loss_KL": np.mean(loss_KL)}
-    """
-    # Run the batch loop
-    metrics, starting_step = batch_loop(
+def train_loop_step_based(train_dataloader, forward_method, optimizer, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
+                          starting_step, beta_scheduler, scale_h_loss, scale_v_loss, scale_o_loss,
+                          log_frequency=100, eval_callbacks=None):
+    """Step-based training loop"""
+    return batch_loop_step_based(
         dataloader_=train_dataloader,
         forward_method=forward_method,
         hit_loss_fn=hit_loss_fn,
@@ -351,60 +313,33 @@ def train_loop(train_dataloader, forward_method,
         offset_loss_fn=offset_loss_fn,
         optimizer=optimizer,
         starting_step=starting_step,
-        kl_beta=kl_beta,
+        beta_scheduler=beta_scheduler,
         scale_h_loss=scale_h_loss,
         scale_v_loss=scale_v_loss,
-        scale_o_loss=scale_o_loss)
-
-    metrics = {f"Loss_Criteria/{key}_train": value for key, value in sorted(metrics.items())}
-    return metrics, starting_step
-
-
-def test_loop(test_dataloader, forward_method,
-              hit_loss_fn, velocity_loss_fn, offset_loss_fn,
-              kl_beta, scale_h_loss, scale_v_loss, scale_o_loss):
-    """
-    This function performs the test loop for the given model and dataloader. It will iterate over the dataloader
-    and perform the forward pass for each batch. The loss values are accumulated and the average is returned at the end
-    of the loop.
-
-    :param test_dataloader:   (torch.utils.data.DataLoader)  dataloader for the test dataset
-    :param model:  (GenreGlobalDensityWithVoiceMutesVAE)  the model
-    :param batch_data_extractor:  (function)  a function to extract the batch data
-    :param hit_loss_fn:     ("dice" or torch.nn.BCEWithLogitsLoss)
-    :param velocity_loss_fn:    (torch.nn.BCEWithLogitsLoss)
-    :param offset_loss_fn:    (torch.nn.HuberLoss)
-    :param device:  (str)  the device to use for the model
-    :param kl_beta: (float)  the beta value for the KL loss
-
-    :return:   (dict)  a dictionary containing the loss values for the current batch
-
-            metrics = {
-                    "test/loss_total": np.mean(loss_total),
-                    "test/loss_h": np.mean(loss_h),
-                    "test/loss_v": np.mean(loss_v),
-                    "test/loss_o": np.mean(loss_o),
-                    "test/loss_KL": np.mean(loss_KL)}
-    """
-
-    with torch.no_grad():
-        # Run the batch loop
-        metrics = batch_loop(
-            dataloader_=test_dataloader,
-            forward_method=forward_method,
-            hit_loss_fn=hit_loss_fn,
-            velocity_loss_fn=velocity_loss_fn,
-            offset_loss_fn=offset_loss_fn,
-            optimizer=None,
-            kl_beta=kl_beta,
-            scale_h_loss=scale_h_loss,
-            scale_v_loss=scale_v_loss,
-            scale_o_loss=scale_o_loss)
-
-    metrics = {f"Loss_Criteria/{key}_test": value for key, value in sorted(metrics.items())}
-
-    return metrics
+        scale_o_loss=scale_o_loss,
+        log_frequency=log_frequency,
+        eval_callbacks=eval_callbacks,
+        is_training=True
+    )
 
 
-
-
+def test_loop_step_based(test_dataloader, forward_method, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
+                         starting_step, beta_scheduler, scale_h_loss, scale_v_loss, scale_o_loss,
+                         log_frequency=100):
+    """Step-based test loop - doesn't increment global step counter"""
+    return batch_loop_step_based(
+        dataloader_=test_dataloader,
+        forward_method=forward_method,
+        hit_loss_fn=hit_loss_fn,
+        velocity_loss_fn=velocity_loss_fn,
+        offset_loss_fn=offset_loss_fn,
+        optimizer=None,
+        starting_step=starting_step,
+        beta_scheduler=beta_scheduler,
+        scale_h_loss=scale_h_loss,
+        scale_v_loss=scale_v_loss,
+        scale_o_loss=scale_o_loss,
+        log_frequency=log_frequency,
+        is_training=False,
+        wandb_log=False  # Disable step-based logging during test to avoid conflicts
+    )
