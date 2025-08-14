@@ -50,11 +50,11 @@ scale_v_loss: 4
 scale_o_loss: 10
 
 # Step-based beta annealing
-beta_annealing_period_steps: 25000           # 25,000 steps per cycle
+beta_annealing_period_steps: 2000           # 25,000 steps per cycle
 beta_annealing_start_first_rise_at_step: 5000  # 5,000 steps warmup
-beta_annealing_per_cycle_rising_ratio: 0.9
+beta_annealing_per_cycle_rising_ratio: 0.7
 beta_annealing_activated: true
-beta_level: 1
+beta_level: 0.5
 
 # Step-based logging frequencies
 step_log_frequency: 1                        # Log every 50 steps
