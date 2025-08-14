@@ -48,7 +48,36 @@ class DiceLoss(torch.nn.Module):
         return 1 - dice
 
 
-class StepBasedBetaScheduler:
+class AdaptiveBetaScheduler:
+    """Adaptive beta scheduler that targets a specific KL divergence"""
+
+    def __init__(self, target_kl=4.0, beta_min=0.0, beta_max=1.0, adjustment_rate=0.001):
+        self.target_kl = target_kl
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        self.adjustment_rate = adjustment_rate
+        self.current_beta = beta_min
+        self.kl_history = []
+
+    def update(self, current_kl):
+        """Update beta based on current KL divergence"""
+        self.kl_history.append(current_kl)
+
+        # Use moving average of recent KL values
+        recent_kl = np.mean(self.kl_history[-10:]) if len(self.kl_history) >= 10 else current_kl
+
+        if recent_kl < self.target_kl:
+            # KL too low, decrease beta to allow more deviation from prior
+            self.current_beta = max(self.beta_min, self.current_beta - self.adjustment_rate)
+        else:
+            # KL too high, increase beta to push closer to prior
+            self.current_beta = min(self.beta_max, self.current_beta + self.adjustment_rate)
+
+        return self.current_beta
+
+    def get_beta(self, step=None):
+        return self.current_beta
+
     """Beta annealing scheduler that works with training steps"""
 
     def __init__(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0, beta_level=1.0):
@@ -141,12 +170,19 @@ def calculate_offset_loss(offset_logits, offset_targets, offset_loss_function, h
         return (offset_loss_function(offset_activated, offset_targets) * hit_mask).mean()
 
 
-def calculate_kld_loss(mu, log_var):
-    """Calculate the KLD loss for the given mu and log_var values against a standard normal distribution"""
+def calculate_kld_loss(mu, log_var, free_bits=4.0):
+    """Calculate KLD loss with free bits to prevent posterior collapse"""
     mu = mu.view(mu.shape[0], -1)
     log_var = log_var.view(log_var.shape[0], -1)
     log_var = torch.clamp(log_var, min=-10, max=10)
+
+    # Standard KL divergence
     kld_loss = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
+
+    # Apply free bits - only penalize KL above the threshold
+    if free_bits > 0:
+        kld_loss = torch.clamp(kld_loss - free_bits / kld_loss.shape[-1], min=0.0)
+
     return kld_loss.mean()
 
 
@@ -279,10 +315,12 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
             "l_KL": f"{current_loss_KL:.4f}",
         })
 
-        current_step += 1
-        # Only increment beta scheduler during training to avoid conflicts
-        if beta_scheduler is not None and is_training:
-            beta_scheduler.step()
+        # Only increment step counter during training
+        if is_training:
+            current_step += 1
+            # Only increment beta scheduler during training
+            if beta_scheduler is not None:
+                beta_scheduler.step()
 
     # Return aggregated metrics for the entire pass
     aggregated_metrics = {
@@ -294,11 +332,7 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
         f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_recon": np.mean(step_metrics['loss_recon'])
     }
 
-    # Only return updated step counter for training
-    if is_training:
-        return aggregated_metrics, current_step
-    else:
-        return aggregated_metrics, starting_step  # Don't change step counter for test
+    return aggregated_metrics, current_step
 
 
 def train_loop_step_based(train_dataloader, forward_method, optimizer, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
@@ -326,7 +360,7 @@ def train_loop_step_based(train_dataloader, forward_method, optimizer, hit_loss_
 def test_loop_step_based(test_dataloader, forward_method, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
                          starting_step, beta_scheduler, scale_h_loss, scale_v_loss, scale_o_loss,
                          log_frequency=100):
-    """Step-based test loop - doesn't increment global step counter"""
+    """Step-based test loop - doesn't increment step counter or log step-by-step"""
     return batch_loop_step_based(
         dataloader_=test_dataloader,
         forward_method=forward_method,
@@ -341,5 +375,5 @@ def test_loop_step_based(test_dataloader, forward_method, hit_loss_fn, velocity_
         scale_o_loss=scale_o_loss,
         log_frequency=log_frequency,
         is_training=False,
-        wandb_log=False  # Disable step-based logging during test to avoid conflicts
+        wandb_log=False  # No step-by-step logging during test
     )
