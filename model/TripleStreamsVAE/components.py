@@ -58,28 +58,43 @@ class PositionalEncoding(torch.nn.Module):
 class InputGrooveLayerWithTwoControls(torch.nn.Module):
     """
     Receives a hvo tensor of shape (batch, max_len, 3), and returns a tensor of shape
-    (batch, 33, d_model)
+    (batch, 33, d_model) when prepend_control_tokens=True, or (batch, 32, d_model) when False
 
     """
 
     def __init__(self, embedding_size, d_model, max_len,
                  velocity_dropout, offset_dropout,
-                 positional_encoding_dropout, n_encoding_control1_tokens, n_encoding_control2_tokens):
+                 positional_encoding_dropout, n_encoding_control1_tokens, n_encoding_control2_tokens,
+                 prepend_control_tokens=False):
         super(InputGrooveLayerWithTwoControls, self).__init__()
+        self.prepend_control_tokens = prepend_control_tokens
         self.n_encoding_control1_tokens = n_encoding_control1_tokens
-        self.encoding_control1_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control1_tokens, embedding_dim=max_len * d_model)
         self.n_encoding_control2_tokens = n_encoding_control2_tokens
-        self.encoding_control2_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control2_tokens, embedding_dim=max_len * d_model)
-    
+
+        if prepend_control_tokens:
+            # When prepending, embeddings should output d_model dimensions directly
+            self.encoding_control1_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control1_tokens,
+                                                                  embedding_dim=d_model)
+            self.encoding_control2_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control2_tokens,
+                                                                  embedding_dim=d_model)
+            # Positional encoding needs to handle max_len + 2 (for the two control tokens)
+            self.PositionalEncoding = PositionalEncoding(d_model, max_len + 2, positional_encoding_dropout)
+        else:
+            # Original behavior: embeddings output max_len * d_model for summation
+            self.encoding_control1_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control1_tokens,
+                                                                  embedding_dim=max_len * d_model)
+            self.encoding_control2_embedding = torch.nn.Embedding(num_embeddings=self.n_encoding_control2_tokens,
+                                                                  embedding_dim=max_len * d_model)
+            self.PositionalEncoding = PositionalEncoding(d_model, max_len, positional_encoding_dropout)
+
         self.velocity_dropout = torch.nn.Dropout(p=velocity_dropout)
         self.offset_dropout = torch.nn.Dropout(p=offset_dropout)
-        self.HitsLinear = torch.nn.Linear(embedding_size//3, d_model, bias=True)
-        self.VelocitiesLinear = torch.nn.Linear(embedding_size//3, d_model, bias=True)
-        self.OffsetsLinear = torch.nn.Linear(embedding_size//3, d_model, bias=True)
+        self.HitsLinear = torch.nn.Linear(embedding_size // 3, d_model, bias=True)
+        self.VelocitiesLinear = torch.nn.Linear(embedding_size // 3, d_model, bias=True)
+        self.OffsetsLinear = torch.nn.Linear(embedding_size // 3, d_model, bias=True)
         self.HitsReLU = torch.nn.ReLU()
         self.VelocitiesReLU = torch.nn.ReLU()
         self.OffsetsReLU = torch.nn.ReLU()
-        self.PositionalEncoding = PositionalEncoding(d_model, (max_len), positional_encoding_dropout)
 
     def init_weights(self, initrange=0.1):
         self.encoding_control1_embedding.weight.data.uniform_(-initrange, initrange)
@@ -93,9 +108,9 @@ class InputGrooveLayerWithTwoControls(torch.nn.Module):
 
     def forward(self, hvo, encoding_control1_token, encoding_control2_token):
         '''
-
         :param hvo: shape (batch, 32, 3)
-        :return:
+        :return: when prepend_control_tokens=True: (batch, 34, d_model)
+                 when prepend_control_tokens=False: (batch, 32, d_model)
         '''
         if len(encoding_control1_token.shape) == 1:
             encoding_control1_token = encoding_control1_token.unsqueeze(-1)
@@ -106,17 +121,33 @@ class InputGrooveLayerWithTwoControls(torch.nn.Module):
         hit = hvo[:, :, 0:1]
         vel = hvo[:, :, 1:2]
         offset = hvo[:, :, 2:3]
-        # hvo_ = torch.cat((hit, self.velocity_dropout(vel), self.offset_dropout(offset)), dim=2)
+
+        # Process HVO features
         hits_projection = self.HitsReLU(self.HitsLinear(hit))
         velocities_projection = self.VelocitiesReLU(self.VelocitiesLinear(self.velocity_dropout(vel)))
         offsets_projection = self.OffsetsReLU(self.OffsetsLinear(self.offset_dropout(offset)))
-        control1_embedding = self.encoding_control1_embedding(encoding_control1_token)
-        control1_embedding = control1_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
-        control2_embedding = self.encoding_control2_embedding(encoding_control2_token)
-        control2_embedding = control2_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
-        hvo_projection = hits_projection + velocities_projection + offsets_projection + control1_embedding + control2_embedding
-        out = self.PositionalEncoding(hvo_projection)
-        return out, hit[:, :, 0], hvo_projection
+
+        if self.prepend_control_tokens:
+            # Get control embeddings - shape (batch, 1, d_model)
+            control1_embedding = self.encoding_control1_embedding(encoding_control1_token)  # (batch, 1, d_model)
+            control2_embedding = self.encoding_control2_embedding(encoding_control2_token)  # (batch, 1, d_model)
+
+            # Combine HVO projections
+            hvo_projection = hits_projection + velocities_projection + offsets_projection  # (batch, 32, d_model)
+
+            # Prepend control tokens to the sequence
+            sequence = torch.cat([control1_embedding, control2_embedding, hvo_projection],
+                                 dim=1)  # (batch, 34, d_model)
+        else:
+            # Original behavior: sum control embeddings with HVO projections
+            control1_embedding = self.encoding_control1_embedding(encoding_control1_token)
+            control1_embedding = control1_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
+            control2_embedding = self.encoding_control2_embedding(encoding_control2_token)
+            control2_embedding = control2_embedding.view(-1, hits_projection.shape[1], hits_projection.shape[-1])
+            sequence = hits_projection + velocities_projection + offsets_projection + control1_embedding + control2_embedding
+
+        out = self.PositionalEncoding(sequence)
+        return out, hit[:, :, 0], sequence
 
 
 # --------------------------------------------------------------------------------
@@ -161,11 +192,17 @@ class LatentLayer(torch.nn.Module):
    :return: mu, log_var, z (Tensor) [B x max_len_enc x d_model_enc]
    """
 
-    def __init__(self, max_len, d_model, latent_dim):
+    def __init__(self, max_len, d_model, latent_dim, prepend_control_tokens=False):
         super(LatentLayer, self).__init__()
 
-        self.fc_mu = torch.nn.Linear(int(max_len * d_model), latent_dim)
-        self.fc_var = torch.nn.Linear(int(max_len * d_model), latent_dim)
+        # Adjust input size based on whether control tokens are prepended
+        if prepend_control_tokens:
+            input_size = int((max_len + 2) * d_model)  # +2 for the two encoder control tokens
+        else:
+            input_size = int(max_len * d_model)
+
+        self.fc_mu = torch.nn.Linear(input_size, latent_dim)
+        self.fc_var = torch.nn.Linear(input_size, latent_dim)
 
     def init_weights(self, initrange=0.1):
         self.fc_mu.bias.data.zero_()
@@ -177,7 +214,7 @@ class LatentLayer(torch.nn.Module):
     def forward(self, src: torch.Tensor):
         """ converts the input into a latent space representation
 
-        :param src: (Tensor) Input tensor to REPARAMETERIZE [N x max_encoder_len x d_model]
+        :param src: (Tensor) Input tensor to REPARAMETERIZE [N x seq_len x d_model]
         :return:  mu , logvar, z (each with dimensions [N, latent_dim_size])
         """
         result = torch.flatten(src, start_dim=1)
@@ -231,19 +268,35 @@ class SingleFeatureOutputLayer(torch.nn.Module):
 
 class DecoderInput(torch.nn.Module):
     """ Embeds the output controls and adds them to the latent space representation.
-    Then the result is reshaped to [batch, max_len, d_model_dec] to be used as input to the decoder
+    When prepend_control_tokens=False: result is reshaped to [batch, max_len, d_model_dec]
+    When prepend_control_tokens=True: result is [batch, max_len + 3, d_model_dec] (3 control tokens prepended)
     """
 
     def __init__(self, max_len, latent_dim, d_model,
-                 n_decoding_control1_tokens, n_decoding_control2_tokens, n_decoding_control3_tokens):
+                 n_decoding_control1_tokens, n_decoding_control2_tokens, n_decoding_control3_tokens,
+                 prepend_control_tokens=False):
 
         super(DecoderInput, self).__init__()
         self.max_len = max_len
         self.d_model = d_model
+        self.prepend_control_tokens = prepend_control_tokens
 
-        self.control1_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control1_tokens, embedding_dim=latent_dim)
-        self.control2_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control2_tokens, embedding_dim=latent_dim)
-        self.control3_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control3_tokens, embedding_dim=latent_dim)
+        if prepend_control_tokens:
+            # Control embeddings output d_model dimensions for prepending
+            self.control1_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control1_tokens,
+                                                         embedding_dim=d_model)
+            self.control2_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control2_tokens,
+                                                         embedding_dim=d_model)
+            self.control3_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control3_tokens,
+                                                         embedding_dim=d_model)
+        else:
+            # Original behavior: embeddings output latent_dim for summation
+            self.control1_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control1_tokens,
+                                                         embedding_dim=latent_dim)
+            self.control2_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control2_tokens,
+                                                         embedding_dim=latent_dim)
+            self.control3_embedding = torch.nn.Embedding(num_embeddings=n_decoding_control3_tokens,
+                                                         embedding_dim=latent_dim)
 
         self.fc = torch.nn.Linear(int(latent_dim), int(max_len * d_model))
         self.reLU = torch.nn.ReLU()
@@ -270,9 +323,9 @@ class DecoderInput(torch.nn.Module):
         :param decoding_control3_token:  shape (batch) or (batch, 1)
 
         :return:
-                projected (latent+outputstream controls projected) into the shape (batch, max_len, d_model_dec)
+                when prepend_control_tokens=False: (batch, max_len, d_model_dec)
+                when prepend_control_tokens=True: (batch, max_len + 3, d_model_dec)
         """
-
 
         if len(decoding_control1_token.shape) == 2:
             decoding_control1_token = decoding_control1_token.squeeze(-1)
@@ -281,9 +334,25 @@ class DecoderInput(torch.nn.Module):
         if len(decoding_control3_token.shape) == 2:
             decoding_control3_token = decoding_control3_token.squeeze(-1)
 
-        latent_z = (latent_z +
-                    self.control1_embedding(decoding_control1_token) +
-                    self.control2_embedding(decoding_control2_token) +
-                    self.control3_embedding(decoding_control3_token))
+        if self.prepend_control_tokens:
+            # Get control embeddings - each has shape (batch, 1, d_model)
+            control1_emb = self.control1_embedding(decoding_control1_token).unsqueeze(1)  # (batch, 1, d_model)
+            control2_emb = self.control2_embedding(decoding_control2_token).unsqueeze(1)  # (batch, 1, d_model)
+            control3_emb = self.control3_embedding(decoding_control3_token).unsqueeze(1)  # (batch, 1, d_model)
 
-        return self.reLU(self.fc.forward(latent_z)).view(-1, self.max_len, self.d_model)
+            # Project latent_z and reshape to (batch, max_len, d_model)
+            latent_projected = self.reLU(self.fc.forward(latent_z)).view(-1, self.max_len, self.d_model)
+
+            # Prepend control tokens to the sequence
+            output = torch.cat([control1_emb, control2_emb, control3_emb, latent_projected],
+                               dim=1)  # (batch, max_len + 3, d_model)
+        else:
+            # Original behavior: sum control embeddings with latent_z
+            latent_z_with_controls = (latent_z +
+                                      self.control1_embedding(decoding_control1_token) +
+                                      self.control2_embedding(decoding_control2_token) +
+                                      self.control3_embedding(decoding_control3_token))
+
+            output = self.reLU(self.fc.forward(latent_z_with_controls)).view(-1, self.max_len, self.d_model)
+
+        return output
