@@ -358,6 +358,7 @@ def collect_train_set_info(dataset_setting_json_path_, num_voice_density_bins, n
 # ---------------------------------------------------------------------------------------------- #
 
 class Groove2TripleStream2BarDataset(Dataset):
+
     def __init__(self,
                  config,
                  subset_tag,            # pass "train" or "validation" or "test"
@@ -582,48 +583,155 @@ class Groove2TripleStream2BarDataset(Dataset):
         text += f"    {self.dataset_setting_json_path}\n"
         return text
 
+    @classmethod
+    def from_concatenated_datasets(cls,
+                                   config,
+                                   subset_tag,
+                                   use_cached=True,
+                                   downsampled_size=None,
+                                   force_regenerate=False,
+                                   move_all_to_cuda=False):
+        """
+        Alternative constructor that loads multiple dataset files and concatenates them
+        into a single dataset instance, avoiding ConcatDataset issues.
+
+        This preserves device location (GPU/CPU) of tensors after concatenation.
+        Individual datasets are cached, but the concatenated result is not cached.
+        """
+
+        dataLoaderLogger.info(f"Creating concatenated dataset from {len(config['dataset_files'])} files")
+
+        individual_downsampled_size = int(
+            downsampled_size / len(config["dataset_files"])) if downsampled_size is not None else None
+
+        # Load all individual datasets (these can be cached)
+        datasets = []
+        pbar = tqdm.tqdm(config["dataset_files"], desc="Loading dataset files for concatenation")
+        for dataset_file in pbar:
+            pbar.set_description(f"Loading: {dataset_file}")
+            new_config = config.copy()
+            new_config["dataset_files"] = [dataset_file]
+
+            dataset = cls(
+                config=new_config,
+                subset_tag=subset_tag,
+                use_cached=use_cached,
+                downsampled_size=individual_downsampled_size,
+                force_regenerate=force_regenerate,
+                move_all_to_cuda=False  # Don't move individual datasets to CUDA yet
+            )
+            datasets.append(dataset)
+
+        # Drop metadata keys that don't exist in all datasets (like in get_triplestream_dataset)
+        common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in datasets))
+        dataLoaderLogger.info(f"Loaded {len(datasets)} datasets:")
+        for ix, ds in enumerate(datasets):
+            ds.metadata = [{k: v for k, v in sample.items() if k in common_keys} for sample in ds.metadata]
+            dataLoaderLogger.info(f"\t {ix} : {config['dataset_files'][ix]} --> {len(ds)} samples")
+
+        # Concatenate all data
+        dataLoaderLogger.info("Concatenating datasets...")
+
+        # Concatenate tensors
+        input_grooves = torch.cat([ds.input_grooves for ds in datasets], dim=0)
+        output_streams = torch.cat([ds.output_streams for ds in datasets], dim=0)
+        flat_output_streams = torch.cat([ds.flat_output_streams for ds in datasets], dim=0)
+        encoding_control1_tokens = torch.cat([ds.encoding_control1_tokens for ds in datasets], dim=0)
+        encoding_control2_tokens = torch.cat([ds.encoding_control2_tokens for ds in datasets], dim=0)
+        decoding_control1_tokens = torch.cat([ds.decoding_control1_tokens for ds in datasets], dim=0)
+        decoding_control2_tokens = torch.cat([ds.decoding_control2_tokens for ds in datasets], dim=0)
+        decoding_control3_tokens = torch.cat([ds.decoding_control3_tokens for ds in datasets], dim=0)
+
+        # Concatenate lists (metadata already cleaned above)
+        metadata = []
+        tempos = []
+        collection = []
+        for ds in datasets:
+            metadata.extend(ds.metadata)
+            tempos.extend(ds.tempos)
+            collection.extend(ds.collection)
+
+        # Create new instance
+        instance = cls.__new__(cls)
+        instance.dataset_root_path = config["dataset_root_path"]
+        instance.dataset_files = config["dataset_files"]
+        instance.subset_tag = subset_tag
+        instance.max_len = config["max_len"]
+        instance.n_encoding_control1_tokens = config["n_encoding_control1_tokens"]
+        instance.encoding_control1_key = config["encoding_control1_key"]
+        instance.n_encoding_control2_tokens = config["n_encoding_control2_tokens"]
+        instance.encoding_control2_key = config["encoding_control2_key"]
+        instance.n_decoding_control1_tokens = config["n_decoding_control1_tokens"]
+        instance.decoding_control1_key = config["decoding_control1_key"]
+        instance.n_decoding_control2_tokens = config["n_decoding_control2_tokens"]
+        instance.decoding_control2_key = config["decoding_control2_key"]
+        instance.n_decoding_control3_tokens = config["n_decoding_control3_tokens"]
+        instance.decoding_control3_key = config["decoding_control3_key"]
+
+        # Assign concatenated data
+        instance.input_grooves = input_grooves
+        instance.output_streams = output_streams
+        instance.flat_output_streams = flat_output_streams
+        instance.encoding_control1_tokens = encoding_control1_tokens
+        instance.encoding_control2_tokens = encoding_control2_tokens
+        instance.decoding_control1_tokens = decoding_control1_tokens
+        instance.decoding_control2_tokens = decoding_control2_tokens
+        instance.decoding_control3_tokens = decoding_control3_tokens
+        instance.metadata = metadata
+        instance.tempos = tempos
+        instance.collection = collection
+        instance.indices = list(range(len(metadata)))
+
+        # Move to GPU (CUDA/MPS) if requested
+        if move_all_to_cuda:
+            # Try CUDA first, then MPS, fallback to CPU
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+                dataLoaderLogger.info("Moving concatenated dataset to CUDA")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = torch.device("mps")
+                dataLoaderLogger.info("Moving concatenated dataset to MPS")
+            else:
+                device = torch.device("cpu")
+                dataLoaderLogger.warning("CUDA and MPS not available, keeping dataset on CPU")
+
+            instance.input_grooves = instance.input_grooves.to(device)
+            instance.output_streams = instance.output_streams.to(device)
+            instance.flat_output_streams = instance.flat_output_streams.to(device)
+            instance.encoding_control1_tokens = instance.encoding_control1_tokens.to(device)
+            instance.encoding_control2_tokens = instance.encoding_control2_tokens.to(device)
+            instance.decoding_control1_tokens = instance.decoding_control1_tokens.to(device)
+            instance.decoding_control2_tokens = instance.decoding_control2_tokens.to(device)
+            instance.decoding_control3_tokens = instance.decoding_control3_tokens.to(device)
+
+        dataLoaderLogger.info(f"Concatenated dataset created with {len(instance)} samples")
+        return instance
 
 def get_triplestream_dataset(
         config,
-        subset_tag,            # pass "train" or "validation" or "test"
+        subset_tag,  # pass "train" or "validation" or "test"
         use_cached=True,
         downsampled_size=None,
         force_regenerate=False,
         move_all_to_cuda=False):
-
-    loaded_dataset = []
-
-    downsampled_size = int(downsampled_size / len(config["dataset_files"])) if downsampled_size is not None else None
+    """
+    Alternative to get_triplestream_dataset that returns a single concatenated dataset
+    instead of using ConcatDataset, preserving device location.
+    """
 
     try:
         cfg_dict = config.as_dict()
     except:
         cfg_dict = config
 
-    pbar = tqdm.tqdm(cfg_dict["dataset_files"], desc="Loading dataset files") if len(cfg_dict["dataset_files"]) > 1 else cfg_dict["dataset_files"]
-    for dataset_file in pbar:
-        if len(cfg_dict["dataset_files"]) > 1:
-            pbar.set_description(dataset_file)
-        new_config = cfg_dict.copy()
-        new_config["dataset_files"] = [dataset_file]
-        dataset = Groove2TripleStream2BarDataset(
-            config=new_config,
-            subset_tag=subset_tag,
-            use_cached=use_cached,
-            downsampled_size=downsampled_size,
-            force_regenerate=force_regenerate,
-            move_all_to_cuda=move_all_to_cuda
-        )
-        loaded_dataset.append(dataset)
-    # drop any keys in the metadata that doesnt exist in all datasets
-    common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in loaded_dataset))
-    dataLoaderLogger.info(f"Loaded {len(loaded_dataset)} datasets:")
-    for ix, ds in enumerate(loaded_dataset):
-        ds.metadata = [{k: v for k, v in sample.items() if k in common_keys} for sample in ds.metadata]
-        dataLoaderLogger.info(f"\t {ix} : {cfg_dict['dataset_files'][ix]} --> {len(loaded_dataset[ix])} samples")
-
-    return ConcatDataset(loaded_dataset)
-
+    return Groove2TripleStream2BarDataset.from_concatenated_datasets(
+        config=cfg_dict,
+        subset_tag=subset_tag,
+        use_cached=use_cached,
+        downsampled_size=downsampled_size,
+        force_regenerate=force_regenerate,
+        move_all_to_cuda=move_all_to_cuda
+    )
 
 if __name__ == "__main__":
     # tester
@@ -635,15 +743,17 @@ if __name__ == "__main__":
     # Load Mega dataset as torch.utils.data.Dataset
 
     import yaml
-
+    from data import Groove2TripleStream2BarDataset
     # load dataset as torch.utils.data.Dataset
-    training_dataset = get_triplestream_dataset(
+    training_dataset = Groove2TripleStream2BarDataset.from_concatenated_datasets(
         config=yaml.load(open("helpers/configs/TripleStreams_beta_0.5_test.yaml", "r"), Loader=yaml.FullLoader),
         subset_tag="train",
         use_cached=True,
         downsampled_size=None,
-        force_regenerate=False
+        force_regenerate=False,
+        move_all_to_cuda=True
     )
+
     from torch.utils.data import DataLoader
     loader = DataLoader(
         training_dataset,
@@ -652,4 +762,9 @@ if __name__ == "__main__":
         num_workers=0,  # <—
         drop_last=False
     )
+
+    for batch in loader:
+        for item in batch[:-2]:
+            print(item.device)
+        break
 
