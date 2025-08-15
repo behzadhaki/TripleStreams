@@ -123,11 +123,11 @@ def generate_umap_for_wandb(
         umapper.fit(latents_z, tags_=tags_used)
         p = umapper.plot(show_plot=False, prepare_for_wandb=True)
         end = time.time()
-        logger.info(f"UMAP Generation for {subset_tag} took {end - start} seconds")
+        # logger.info(f"UMAP Generation for {subset_tag} took {end - start} seconds")
         return {f"{subset_tag}_umap": p}, test_dataset
 
     except Exception as e:
-        logger.info(f"UMAP failed for subset: {subset_tag}".format(subset_tag))
+        # logger.info(f"UMAP failed for subset: {subset_tag}".format(subset_tag))
         return None, test_dataset
 
 
@@ -187,9 +187,7 @@ def get_pianoroll_for_wandb(
     predictions = []
     full_midi_filenames = []
 
-
-    for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader),
-                                          desc=f"Generating Hit Scores - {subset_tag}"):
+    for batch_ix, batch_data in enumerate(dataloader):
         hvos_array, latent_z = predict_using_batch_data_method(batch_data=batch_data)
         hvos_array = stack_groove_with_outputs(input_hvos=batch_data[0], output_hvos=hvos_array)
         predictions.append(hvos_array.detach().cpu().numpy())
@@ -230,7 +228,7 @@ def get_hit_scores(
         divide_by_collection=True,   # use collection instead
         previous_evaluator=None):
 
-    # logger.info("Generating the hit scores for subset: {}".format(subset_tag))
+    # # logger.info("Generating the hit scores for subset: {}".format(subset_tag))
     # and model is correct type
 
     start = time.time()
@@ -259,7 +257,7 @@ def get_hit_scores(
     predictions = []
     full_midi_filenames = []
 
-    for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Generating Hit Scores - {subset_tag}"):
+    for batch_ix, batch_data in enumerate(dataloader):
         hvos_array, latent_z = predict_using_batch_data_method(batch_data=batch_data)
         predictions.append(hvos_array.detach().cpu().numpy())
         full_midi_filenames.extend(batch_data[-2]['full_midi_filename'])

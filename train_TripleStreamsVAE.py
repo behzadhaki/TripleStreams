@@ -264,7 +264,8 @@ if __name__ == "__main__":
         subset_tag="train",
         use_cached=True,
         downsampled_size=1000 if is_testing else None,
-        move_all_to_cuda=args.move_all_to_cuda
+        move_all_to_cuda=args.move_all_to_cuda,
+        print_logs=True
     )
 
     train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=True)
@@ -274,6 +275,7 @@ if __name__ == "__main__":
         subset_tag="test",
         use_cached=True,
         downsampled_size=1000 if is_testing else None,
+        print_logs=True
     )
 
     test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
@@ -367,7 +369,7 @@ if __name__ == "__main__":
     # Setup evaluation callbacks for step-based evaluation
     def quick_hit_scores_train(step):
         """Quick hit score evaluation for training set"""
-        logger.info(f"Step {step}: Calculating Hit Scores on Train Set")
+        # logger.info(f"Step {step}: Calculating Hit Scores on Train Set")
         train_set_hit_scores, _ = eval_utils.get_hit_scores(
             config=config,
             subset_tag='train',
@@ -382,7 +384,7 @@ if __name__ == "__main__":
 
     def quick_hit_scores_test(step):
         """Quick hit score evaluation for test set"""
-        logger.info(f"Step {step}: Calculating Hit Scores on Test Set")
+        # logger.info(f"Step {step}: Calculating Hit Scores on Test Set")
         test_set_hit_scores, _ = eval_utils.get_hit_scores(
             config=config,
             subset_tag='test',
@@ -397,7 +399,7 @@ if __name__ == "__main__":
 
     def piano_roll_generation(step):
         """Generate piano rolls for visualization"""
-        logger.info(f"Step {step}: Generating Piano Rolls")
+        # logger.info(f"Step {step}: Generating Piano Rolls")
         media, _ = eval_utils.get_pianoroll_for_wandb(
             config=config,
             subset_tag='test',

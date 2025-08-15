@@ -234,124 +234,6 @@ def TokenizeControls(
 
     return bin_indices
 
-
-def map_drum_to_groove_hit_ratio_to_categorical(hit_ratios):
-    # check bottomn of the file for the bin calculation
-    _10_bins = [1.149999976158142, 1.2666666507720947, 1.3333333730697632, 1.4137930870056152, 1.4800000190734863,
-                1.5357142686843872, 1.615384578704834, 1.7142857313156128, 1.8666666746139526]
-
-    categories = []
-    for hit_ratio in hit_ratios:
-        categories.append(map_value_to_bins(hit_ratio, _10_bins))
-    return categories
-
-def load_bz2_hvo_sequences(dataset_setting_json_path, subset_tag, force_regenerate=False):
-    """
-    Loads the hvo_sequences using the settings provided in the json file.
-
-    :param dataset_setting_json_path: path to the json file containing the dataset settings (see data/dataset_json_settings/4_4_Beats_gmd.json)
-    :param subset_tag: [str] whether to load the train/test/validation set
-    :param force_regenerate:
-    :return:
-    a list of hvo_sequences loaded from all the datasets specified in the json file
-    """
-
-    # load settings
-    dataset_setting_json = json.load(open(dataset_setting_json_path, "r"))
-
-    # load datasets
-    dataset_tags = [key for key in dataset_setting_json["settings"].keys()]
-
-    loaded_samples = []
-
-    for dataset_tag in dataset_tags:
-        dataLoaderLogger.info(f"Loading {dataset_tag} dataset")
-        raw_data_pickle_path = dataset_setting_json["raw_data_pickle_path"][dataset_tag]
-
-        for path_prepend in ["./", "../", "../../"]:
-            if os.path.exists(path_prepend + raw_data_pickle_path):
-                raw_data_pickle_path = path_prepend + raw_data_pickle_path
-                break
-        assert os.path.exists(raw_data_pickle_path), "path to gmd dict pickle is incorrect --- " \
-                                                "look into data/***/storedDicts/groove-*.bz2pickle"
-
-        dir__ = get_data_directory_using_filters(dataset_tag, dataset_setting_json_path)
-        beat_division_factor = dataset_setting_json["global"]["beat_division_factor"]
-        drum_mapping_label = dataset_setting_json["global"]["drum_mapping_label"]
-
-        if (not os.path.exists(dir__)) or force_regenerate is True:
-            dataLoaderLogger.info(f"load_bz2_hvo_sequences() --> No Cached Version Available Here: {dir__}. ")
-            dataLoaderLogger.info(
-                f"extracting data from raw pickled midi/note_sequence/metadata dictionaries at {raw_data_pickle_path}")
-            gmd_dict = load_original_gmd_dataset_pickle(raw_data_pickle_path)
-            drum_mapping = get_drum_mapping_using_label(drum_mapping_label)
-            hvo_dict = extract_hvo_sequences_dict(gmd_dict, beat_division_factor, drum_mapping)
-            pickle_hvo_dict(hvo_dict, dataset_tag, dataset_setting_json_path)
-            dataLoaderLogger.info(f"load_bz2_hvo_sequences() --> Cached Version available at {dir__}")
-        else:
-            dataLoaderLogger.info(f"load_bz2_hvo_sequences() --> Loading Cached Version from: {dir__}")
-
-        ifile = bz2.BZ2File(os.path.join(dir__, f"{subset_tag}.bz2pickle"), 'rb')
-        data = pickle.load(ifile)
-        ifile.close()
-        loaded_samples.extend(data)
-
-    return loaded_samples
-
-def collect_train_set_info(dataset_setting_json_path_, num_voice_density_bins, num_global_density_bins, max_len=32):
-    """
-
-    :param dataset_setting_json_path_:
-    :param num_voice_density_bins:
-    :param num_global_density_bins:
-    :return:
-     (kick_low_bound, kick_up_bound), (snare_low_bound, snare_up_bound), (hat_low_bound, hat_up_bound),
-        (tom_low_bound, tom_up_bound), (cymbal_low_bound, cymbal_up_bound),
-        (global_density_low_bound, global_density_up_bound), (complexity_low_bound, complexity_up_bound), genre_tags
-    """
-    train_set_genre_tags = []
-    train_set_complexities = []
-    train_set_kick_counts = []
-    train_set_snare_counts = []
-    train_set_hat_counts = []
-    train_set_tom_counts = []
-    train_set_cymbal_counts = []
-    train_set_total_hits = []
-    train_set_hvo_files = []
-    training_set_ = load_bz2_hvo_sequences(dataset_setting_json_path_, "train", force_regenerate=False)
-
-    for ix, hvo_sample in enumerate(
-            tqdm(training_set_,
-                 desc="collecting genre tags and Per Voice Density Bins from corresponding full TRAINING set")):
-        hits = hvo_sample.hits
-        if hits is not None:
-            train_set_hvo_files.append(hvo_sample.metadata["full_midi_filename"])
-            hits = hvo_sample.hvo[:, :9]
-            if hits.sum() > 0:
-                hvo_sample.adjust_length(max_len)
-                if hvo_sample.metadata["style_primary"] not in train_set_genre_tags:  # collect genre tags from training set
-                    train_set_genre_tags.append(hvo_sample.metadata["style_primary"])
-                train_set_complexities.append(
-                    hvo_sample.get_complexity_surprisal()[0])  # collect complexity surprisal from training set
-                train_set_total_hits.append(hits.sum())
-                train_set_kick_counts.append(hits[:, 0].sum())
-                train_set_snare_counts.append(hits[:, 1].sum())
-                train_set_hat_counts.append(hits[:, 2:4].sum())
-                train_set_tom_counts.append(hits[:, 4:7].sum())
-                train_set_cymbal_counts.append(hits[:, 7:].sum())
-
-
-    # get pervoice density bins
-    return (get_bin_bounds_for_voice_densities(train_set_kick_counts, num_voice_density_bins),
-            get_bin_bounds_for_voice_densities(train_set_snare_counts, num_voice_density_bins),
-            get_bin_bounds_for_voice_densities(train_set_hat_counts, num_voice_density_bins),
-            get_bin_bounds_for_voice_densities(train_set_tom_counts, num_voice_density_bins),
-            get_bin_bounds_for_voice_densities(train_set_cymbal_counts, num_voice_density_bins),
-            None,
-            (min(train_set_complexities), max(train_set_complexities)), sorted(train_set_genre_tags),
-            train_set_total_hits, train_set_hvo_files)
-
-
 # ---------------------------------------------------------------------------------------------- #
 # loading a down sampled dataset
 # ---------------------------------------------------------------------------------------------- #
@@ -364,7 +246,8 @@ class Groove2TripleStream2BarDataset(Dataset):
                  use_cached=True,
                  downsampled_size=None,
                  force_regenerate=False,
-                 move_all_to_cuda=False):
+                 move_all_to_cuda=False,
+                 print_logs=False):
 
         """
         :param dataset_setting_json_path:   path to the json file containing the dataset settings (see data/dataset_json_settings/4_4_Beats_gmd.json)
@@ -451,7 +334,11 @@ class Groove2TripleStream2BarDataset(Dataset):
             n_samples = 0
             loaded_data_dictionary = {}
 
-            pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files") if len(self.dataset_files) > 1 else self.dataset_files
+            if print_logs:
+                pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files") if len(self.dataset_files) > 1 else self.dataset_files
+            else:
+                pbar = self.dataset_files
+
             for dataset_file in pbar:
                 if not isinstance(pbar, list):
                     # Update description with current filename
@@ -554,8 +441,9 @@ class Groove2TripleStream2BarDataset(Dataset):
 
         # remove invalid samples
         if len(all_invalid_indices) > 0:
-            print(f"Found {len(all_invalid_indices)} invalid samples in input grooves. Removing them.")
-            print("Size before removing invalid samples: ", self.input_grooves.shape[0])
+            if print_logs:
+                print(f"Found {len(all_invalid_indices)} invalid samples in input grooves. Removing them.")
+                print("Size before removing invalid samples: ", self.input_grooves.shape[0])
             self.input_grooves = np.delete(self.input_grooves, list(all_invalid_indices), axis=0)
             self.output_streams = np.delete(self.output_streams, list(all_invalid_indices), axis=0)
             self.flat_output_streams = np.delete(self.flat_output_streams, list(all_invalid_indices), axis=0)
@@ -567,7 +455,8 @@ class Groove2TripleStream2BarDataset(Dataset):
             self.metadata = [self.metadata[ix] for ix in range(len(self.metadata)) if ix not in all_invalid_indices]
             self.tempos = [self.tempos[ix] for ix in range(len(self.tempos)) if ix not in all_invalid_indices]
             self.collection = [self.collection[ix] for ix in range(len(self.collection)) if ix not in all_invalid_indices]
-            print("Size after removing invalid samples: ", self.input_grooves.shape[0])
+            if print_logs:
+                print("Size after removing invalid samples: ", self.input_grooves.shape[0])
 
         # Convert to tensors (patterns as float32 and controls as long)
         # ------------------------------------------------------------------------------------------
@@ -625,7 +514,8 @@ class Groove2TripleStream2BarDataset(Dataset):
                                    use_cached=True,
                                    downsampled_size=None,
                                    force_regenerate=False,
-                                   move_all_to_cuda=False):
+                                   move_all_to_cuda=False,
+                                   print_logs=False):
         """
         Alternative constructor that loads multiple dataset files and concatenates them
         into a single dataset instance, avoiding ConcatDataset issues.
@@ -633,17 +523,19 @@ class Groove2TripleStream2BarDataset(Dataset):
         This preserves device location (GPU/CPU) of tensors after concatenation.
         Individual datasets are cached, but the concatenated result is not cached.
         """
-
-        dataLoaderLogger.info(f"Creating concatenated dataset from {len(config['dataset_files'])} files")
+        dataLoaderLogger.info(
+            f"Creating concatenated dataset from {len(config['dataset_files'])} files") if print_logs else None
 
         individual_downsampled_size = int(
             downsampled_size / len(config["dataset_files"])) if downsampled_size is not None else None
 
         # Load all individual datasets (these can be cached)
         datasets = []
-        pbar = tqdm.tqdm(config["dataset_files"], desc="Loading dataset files for concatenation")
+        pbar = tqdm.tqdm(config["dataset_files"], desc="Loading dataset files for concatenation") if print_logs else config["dataset_files"]
         for dataset_file in pbar:
-            pbar.set_description(f"Loading: {dataset_file}")
+            if print_logs:
+                # Update description with current filename
+                pbar.set_description(f"Loading: {dataset_file}")
             new_config = config.copy()
             new_config["dataset_files"] = [dataset_file]
 
@@ -653,19 +545,20 @@ class Groove2TripleStream2BarDataset(Dataset):
                 use_cached=use_cached,
                 downsampled_size=individual_downsampled_size,
                 force_regenerate=force_regenerate,
-                move_all_to_cuda=False  # Don't move individual datasets to CUDA yet
+                move_all_to_cuda=False,  # Don't move individual datasets to CUDA yet
+                print_logs=print_logs
             )
             datasets.append(dataset)
 
 
         common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in datasets))
-        dataLoaderLogger.info(f"Loaded {len(datasets)} datasets:")
+        dataLoaderLogger.info(f"Loaded {len(datasets)} datasets:") if print_logs else None
         for ix, ds in enumerate(datasets):
             ds.metadata = [{k: v for k, v in sample.items() if k in common_keys} for sample in ds.metadata]
-            dataLoaderLogger.info(f"\t {ix} : {config['dataset_files'][ix]} --> {len(ds)} samples")
+            dataLoaderLogger.info(f"\t {ix} : {config['dataset_files'][ix]} --> {len(ds)} samples") if print_logs else None
 
         # Concatenate all data
-        dataLoaderLogger.info("Concatenating datasets...")
+        dataLoaderLogger.info("Concatenating datasets...") if print_logs else None
 
         # Concatenate tensors
         input_grooves = torch.cat([ds.input_grooves for ds in datasets], dim=0)
@@ -722,13 +615,13 @@ class Groove2TripleStream2BarDataset(Dataset):
             # Try CUDA first, then MPS, fallback to CPU
             if torch.cuda.is_available():
                 device = torch.device("cuda")
-                dataLoaderLogger.info("Moving concatenated dataset to CUDA")
+                dataLoaderLogger.info("Moving concatenated dataset to CUDA") if print_logs else None
             elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 device = torch.device("mps")
-                dataLoaderLogger.info("Moving concatenated dataset to MPS")
+                dataLoaderLogger.info("Moving concatenated dataset to MPS") if print_logs else None
             else:
                 device = torch.device("cpu")
-                dataLoaderLogger.warning("CUDA and MPS not available, keeping dataset on CPU")
+                dataLoaderLogger.warning("CUDA and MPS not available, keeping dataset on CPU") if print_logs else None
 
             instance.input_grooves = instance.input_grooves.to(device)
             instance.output_streams = instance.output_streams.to(device)
@@ -739,7 +632,7 @@ class Groove2TripleStream2BarDataset(Dataset):
             instance.decoding_control2_tokens = instance.decoding_control2_tokens.to(device)
             instance.decoding_control3_tokens = instance.decoding_control3_tokens.to(device)
 
-        dataLoaderLogger.info(f"Concatenated dataset created with {len(instance)} samples")
+        dataLoaderLogger.info(f"Concatenated dataset created with {len(instance)} samples") if print_logs else None
         return instance
 
 def get_triplestream_dataset(
@@ -748,7 +641,8 @@ def get_triplestream_dataset(
         use_cached=True,
         downsampled_size=None,
         force_regenerate=False,
-        move_all_to_cuda=False):
+        move_all_to_cuda=False,
+        print_logs=False):
     """
     Alternative to get_triplestream_dataset that returns a single concatenated dataset
     instead of using ConcatDataset, preserving device location.
@@ -765,7 +659,8 @@ def get_triplestream_dataset(
         use_cached=use_cached,
         downsampled_size=downsampled_size,
         force_regenerate=force_regenerate,
-        move_all_to_cuda=move_all_to_cuda
+        move_all_to_cuda=move_all_to_cuda,
+        print_logs=print_logs
     )
 
 if __name__ == "__main__":
