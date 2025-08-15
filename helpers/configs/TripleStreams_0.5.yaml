@@ -100,7 +100,7 @@ beta_level: 0.5
 # Step-based logging frequencies
 step_log_frequency: 1                        # Log every 50 steps
 step_hit_score_frequency: 500                # Hit scores every 2000 steps
-step_piano_roll_frequency: 500               # Piano rolls every 1500 steps
+step_piano_roll_frequency: 5000               # Piano rolls every 1500 steps
 
 # Evaluation settings
 calculate_hit_scores_on_train: true
@@ -109,7 +109,7 @@ piano_roll_samples: true
 
 # Model saving
 save_model: true
-save_model_frequency_steps: 1000             # Save every 10000 steps
+save_model_frequency_steps: 5000             # Save every 10000 steps
 save_model_dir: "misc/TripleStreamsVAE"
 
 # Testing
