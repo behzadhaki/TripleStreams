@@ -171,7 +171,7 @@ def get_pianoroll_for_wandb(
             subset_tag=subset_tag,
             downsampled_size=downsampled_size,
             use_cached=use_cached,
-            divide_by_collection=divide_by_collection,
+            divide_by_collection=False,
             use_input_in_hvo_sequences=True
         )
 
