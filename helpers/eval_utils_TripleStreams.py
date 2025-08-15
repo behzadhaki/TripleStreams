@@ -171,7 +171,7 @@ def get_pianoroll_for_wandb(
             subset_tag=subset_tag,
             downsampled_size=downsampled_size,
             use_cached=use_cached,
-            divide_by_collection=False,
+            divide_by_collection=divide_by_collection,
             use_input_in_hvo_sequences=True
         )
 
@@ -196,7 +196,7 @@ def get_pianoroll_for_wandb(
         full_midi_filenames.extend(batch_data[-2]['full_midi_filename'])
 
     evaluator.add_unsorted_predictions(
-        hvos_array.detach().cpu().numpy(),
+        np.concatenate(predictions),
         prediction_full_midi_filenames=full_midi_filenames,
     )
 

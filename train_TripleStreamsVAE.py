@@ -128,6 +128,7 @@ if unknown:
 # Load configuration
 loaded_via_config = False
 if args.config is not None:
+    print(f"\n\n!!!Loading configuration from {args.config}!!!\n\n")
     with open(args.config, "r") as f:
         hparams = yaml.safe_load(f)
         if "wandb_project" not in hparams.keys():
@@ -373,7 +374,7 @@ if __name__ == "__main__":
             use_cached=True,
             downsampled_size=1000,
             predict_using_batch_data_method=predict_using_batch_data,
-            divide_by_collection=False,
+            divide_by_collection=True,
             previous_evaluator=None
         )
         return {f"Quick_Eval/{k}": v for k, v in train_set_hit_scores.items()}

@@ -298,7 +298,6 @@ def load_bz2_hvo_sequences(dataset_setting_json_path, subset_tag, force_regenera
 
     return loaded_samples
 
-
 def collect_train_set_info(dataset_setting_json_path_, num_voice_density_bins, num_global_density_bins, max_len=32):
     """
 
@@ -440,7 +439,7 @@ class Groove2TripleStream2BarDataset(Dataset):
                 self.decoding_control3_tokens = data["decoding_control3_tokens"]
                 self.metadata = data["metadata"]
                 self.tempos = data["tempos"]
-                self.collection = data["collection"]
+                self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
 
                 process_data = False
 
@@ -492,7 +491,7 @@ class Groove2TripleStream2BarDataset(Dataset):
             self.flat_output_streams = np.array(loaded_data_dictionary["flat_out_hvos"])
             self.metadata = loaded_data_dictionary["metadata"]
             self.tempos = loaded_data_dictionary["qpm"]
-            self.collection = loaded_data_dictionary["collection"]
+            self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
 
             # Populate control tokens
             # ------------------------------------------------------------------------------------------
@@ -594,6 +593,7 @@ class Groove2TripleStream2BarDataset(Dataset):
             self.decoding_control1_tokens = self.decoding_control1_tokens.to(device)
             self.decoding_control2_tokens = self.decoding_control2_tokens.to(device)
             self.decoding_control3_tokens = self.decoding_control3_tokens.to(device)
+            self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
             
         self.indices = list(range(len(self.metadata)))
 
@@ -781,13 +781,16 @@ if __name__ == "__main__":
     from data import Groove2TripleStream2BarDataset
     # load dataset as torch.utils.data.Dataset
     training_dataset = Groove2TripleStream2BarDataset.from_concatenated_datasets(
-        config=yaml.load(open("helpers/configs/TripleStreams_beta_0.5_test.yaml", "r"), Loader=yaml.FullLoader),
+        config=yaml.load(open("helpers/configs/Testing.yaml", "r"), Loader=yaml.FullLoader),
         subset_tag="train",
-        use_cached=True,
+        use_cached=False,
         downsampled_size=None,
         force_regenerate=False,
-        move_all_to_cuda=True
+        move_all_to_cuda=False
     )
+    max(training_dataset.encoding_control1_tokens)
+    max(training_dataset.encoding_control2_tokens)
+    max(training_dataset.decoding_control1_tokens)
 
     from torch.utils.data import DataLoader
     loader = DataLoader(
