@@ -26,6 +26,14 @@ parser.add_argument("--config",
                     default=None)
 parser.add_argument("--wandb_project", type=str, help="WANDB Project Name", default="TripleStreamsVAE")
 
+# ----------------------- Checkpoint Resume Parameters -----------------------
+parser.add_argument("--resume_from_checkpoint", type=bool, help="Resume training from checkpoint", default=False)
+parser.add_argument("--checkpoint_wandb_run_id", type=str, help="WandB run ID to resume from", default=None)
+parser.add_argument("--checkpoint_step", type=int, help="Step number to resume from (optional)", default=None)
+parser.add_argument("--checkpoint_artifact_name", type=str, help="Name of model artifact (e.g., model_step_10000)", default=None)
+parser.add_argument("--reset_optimizer", type=bool, help="Reset optimizer state when resuming", default=False)
+parser.add_argument("--reset_beta_scheduler", type=bool, help="Reset beta scheduler when resuming", default=False)
+
 # ----------------------- Model Parameters -----------------------
 parser.add_argument("--d_model_enc", type=int, help="Dimension of the encoder model", default=64)
 parser.add_argument("--d_model_dec", type=int, help="Dimension of the decoder model", default=128)
@@ -191,7 +199,15 @@ else:
         dataset_files=args.dataset_files,
 
         # Model saving
-        save_model_frequency_steps=args.save_model_frequency_steps
+        save_model_frequency_steps=args.save_model_frequency_steps,
+
+        # Checkpoint resume parameters
+        resume_from_checkpoint=args.resume_from_checkpoint,
+        checkpoint_wandb_run_id=args.checkpoint_wandb_run_id,
+        checkpoint_step=args.checkpoint_step,
+        checkpoint_artifact_name=args.checkpoint_artifact_name,
+        reset_optimizer=args.reset_optimizer,
+        reset_beta_scheduler=args.reset_beta_scheduler
     )
 
 # Device availability checks
@@ -281,7 +297,7 @@ if __name__ == "__main__":
         steps_per_epoch = len(train_dataloader)
         total_steps = steps_per_epoch * config.epochs
 
-        beta_scheduler = train_utils.AdaptiveBetaScheduler(
+        beta_scheduler = train_utils.BetaAnnealingScheduler(
             total_steps=total_steps,
             period_steps=config.beta_annealing_period_steps,
             rise_ratio=config.beta_annealing_per_cycle_rising_ratio,
@@ -293,6 +309,10 @@ if __name__ == "__main__":
         beta_scheduler = None
         logger.info("Beta annealing disabled")
 
+    # Setup resumable training (Option 3: Simple approach)
+    starting_step, model_on_device, optimizer, beta_scheduler = train_utils.setup_resumable_training(
+        config, model_on_device, optimizer, beta_scheduler
+    )
 
     # Batch Data IO Extractor
     def batch_data_extractor(data_, device=config.device):
@@ -395,16 +415,11 @@ if __name__ == "__main__":
 
 
     def save_model_checkpoint(step):
-        """Save model checkpoint"""
-        if step > 0:
-            model_artifact = wandb.Artifact(f'model_step_{step}', type='model')
-            model_path = f"{args.save_model_dir}/{args.wandb_project}/{run_name}_{run_id}/step_{step}.pth"
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            model_on_device.save(model_path)
-            model_artifact.add_file(model_path)
-            wandb_run.log_artifact(model_artifact)
-            logger.info(f"Model saved to {model_path}")
-        return {}
+        """Save model checkpoint with enhanced state"""
+        return train_utils.save_model_checkpoint_enhanced(
+            model_on_device, optimizer, beta_scheduler, step,
+            args.save_model_dir, config.wandb_project, run_name, run_id
+        )
 
 
     # Define evaluation callbacks
@@ -435,11 +450,13 @@ if __name__ == "__main__":
         }
 
     # Training loop
-    step_ = 0
+    step_ = starting_step
 
     for epoch in range(config.epochs):
         print("\n\n|" + "=" * 50 + "|")
         print(f"\t\tEpoch {epoch} of {config.epochs}, steps so far {step_}")
+        if starting_step > 0:
+            print(f"\t\tResumed from step {starting_step}")
         print("|" + "=" * 50 + "|")
 
         # Training phase

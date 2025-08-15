@@ -1,3 +1,11 @@
+# Checkpoint resume settings
+resume_from_checkpoint: True
+checkpoint_wandb_run_id: "d97fifkj"  # Replace with actual run ID
+checkpoint_artifact_name: "model_step_19000:v1"  # Replace with actual artifact name
+reset_optimizer: True  # Set to True when changing learning rate significantly
+reset_beta_scheduler: False  # Set to True when changing beta annealing params
+
+
 # Data parameters (your original format)
 dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 dataset_files:
@@ -68,7 +76,7 @@ embedding_size_src: 3
 embedding_size_tgt: 9
 epochs: 1000
 latent_dim: 256
-lr: 0.00006369948608989782
+lr: 0.0006369948608989782
 nhead_enc: 4
 nhead_dec: 8
 num_encoder_layers: 4

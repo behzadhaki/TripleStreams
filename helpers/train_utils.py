@@ -78,6 +78,8 @@ class AdaptiveBetaScheduler:
     def get_beta(self, step=None):
         return self.current_beta
 
+
+class BetaAnnealingScheduler:
     """Beta annealing scheduler that works with training steps"""
 
     def __init__(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0, beta_level=1.0):
@@ -136,6 +138,230 @@ class AdaptiveBetaScheduler:
         """Increment the step counter"""
         self.current_step += 1
         return self.get_beta()
+
+
+def load_checkpoint_from_wandb(wandb_project, run_id, artifact_name, step=None):
+    """
+    Load model checkpoint from WandB artifacts
+
+    Args:
+        wandb_project: WandB project name
+        run_id: WandB run ID
+        artifact_name: Name of the artifact (e.g., 'model_step_10000')
+        step: Step number (optional, can be inferred from artifact_name)
+
+    Returns:
+        checkpoint_data, checkpoint_step
+    """
+    import wandb
+
+    api = wandb.Api()
+
+    # Get the artifact
+    try:
+        artifact = api.artifact(f"behzadhaki/{wandb_project}/{artifact_name}:latest")
+        artifact_dir = artifact.download()
+        logger.info(f"Downloaded artifact {artifact_name} to {artifact_dir}")
+    except Exception as e:
+        logger.error(f"Failed to download artifact {artifact_name}: {e}")
+        raise
+
+    # Find the model file
+    import glob
+    import os
+    model_files = glob.glob(os.path.join(artifact_dir, "*.pth"))
+    if not model_files:
+        raise FileNotFoundError(f"No .pth files found in artifact {artifact_name}")
+
+    model_path = model_files[0]
+    logger.info(f"Loading checkpoint from {model_path}")
+
+    # Load the model
+    checkpoint = torch.load(model_path, map_location='cpu')
+
+    # Extract step number if not provided
+    if step is None:
+        if 'step_' in artifact_name:
+            try:
+                step = int(artifact_name.split('step_')[-1])
+            except ValueError:
+                step = 0
+                logger.warning("Could not parse step from artifact name, defaulting to 0")
+        else:
+            step = 0
+            logger.warning("Could not determine step from artifact name, defaulting to 0")
+
+    logger.info(f"Checkpoint loaded from step {step}")
+    return checkpoint, step
+
+
+def validate_architecture_compatibility(old_config, new_config):
+    """
+    Validate that the new config is compatible with the old model architecture
+
+    Args:
+        old_config: Configuration from the checkpoint (dict or wandb.Config)
+        new_config: New configuration (dict or wandb.Config)
+
+    Returns:
+        bool: True if compatible, raises ValueError if not
+    """
+    # Define architecture-critical parameters
+    architecture_params = [
+        'd_model_enc', 'd_model_dec', 'embedding_size_src', 'embedding_size_tgt',
+        'nhead_enc', 'nhead_dec', 'dim_feedforward_enc', 'dim_feedforward_dec',
+        'num_encoder_layers', 'num_decoder_layers', 'latent_dim', 'max_len_enc', 'max_len_dec',
+        'n_encoding_control1_tokens', 'n_encoding_control2_tokens',
+        'n_decoding_control1_tokens', 'n_decoding_control2_tokens', 'n_decoding_control3_tokens'
+    ]
+
+    incompatible_params = []
+
+    for param in architecture_params:
+        old_val = old_config.get(param) if hasattr(old_config, 'get') else getattr(old_config, param, None)
+        new_val = new_config.get(param) if hasattr(new_config, 'get') else getattr(new_config, param, None)
+
+        if old_val is not None and new_val is not None:
+            if old_val != new_val:
+                incompatible_params.append(param)
+                logger.error(f"  {param}: checkpoint={old_val} vs current={new_val}")
+
+    if incompatible_params:
+        raise ValueError(f"Architecture incompatible! Different values for: {incompatible_params}")
+
+    logger.info("Architecture compatibility validated successfully")
+    return True
+
+
+def setup_resumable_training(config, model, optimizer, beta_scheduler=None):
+    """
+    Setup training resumption from checkpoint (Option 3: Simple approach)
+
+    Args:
+        config: Current configuration (uses CLI args/config file, no inheritance)
+        model: Model instance
+        optimizer: Optimizer instance
+        beta_scheduler: Beta scheduler instance (optional)
+
+    Returns:
+        starting_step, updated_model, updated_optimizer, updated_beta_scheduler
+    """
+    starting_step = 0
+
+    if getattr(config, 'resume_from_checkpoint', False):
+        if not getattr(config, 'checkpoint_wandb_run_id', None) or not getattr(config, 'checkpoint_artifact_name',
+                                                                               None):
+            raise ValueError("Must specify both checkpoint_wandb_run_id and checkpoint_artifact_name when resuming")
+
+        logger.info(f"Resuming from checkpoint: {config.checkpoint_wandb_run_id}/{config.checkpoint_artifact_name}")
+
+        # Load checkpoint
+        checkpoint_data, checkpoint_step = load_checkpoint_from_wandb(
+            config.wandb_project,
+            config.checkpoint_wandb_run_id,
+            config.checkpoint_artifact_name,
+            getattr(config, 'checkpoint_step', None)
+        )
+
+        # Get old configuration from WandB for architecture validation
+        import wandb
+        api = wandb.Api()
+        old_run = api.run(f"behzadhaki/{config.wandb_project}/{config.checkpoint_wandb_run_id}")
+        old_config = old_run.config
+
+        # Validate architecture compatibility
+        validate_architecture_compatibility(old_config, config)
+
+        # Load model state
+        if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
+            # Enhanced checkpoint format
+            model.load_state_dict(checkpoint_data['model_state_dict'])
+            logger.info("Loaded model state from enhanced checkpoint")
+
+            # Load optimizer state if available and not resetting
+            if 'optimizer_state_dict' in checkpoint_data and not getattr(config, 'reset_optimizer', False):
+                try:
+                    optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+                    logger.info("Loaded optimizer state from checkpoint")
+                except Exception as e:
+                    logger.warning(f"Could not load optimizer state: {e}. Continuing with fresh optimizer.")
+            else:
+                logger.info("Optimizer state reset or not available")
+
+            # Load beta scheduler state if available and not resetting
+            if beta_scheduler is not None and 'beta_scheduler_state' in checkpoint_data and not getattr(config,
+                                                                                                        'reset_beta_scheduler',
+                                                                                                        False):
+                try:
+                    beta_scheduler.current_step = checkpoint_data['beta_scheduler_state'].get('current_step',
+                                                                                              checkpoint_step)
+                    if hasattr(beta_scheduler, 'kl_history'):
+                        beta_scheduler.kl_history = checkpoint_data['beta_scheduler_state'].get('kl_history', [])
+                    logger.info("Loaded beta scheduler state from checkpoint")
+                except Exception as e:
+                    logger.warning(f"Could not load beta scheduler state: {e}. Continuing with fresh scheduler.")
+            elif beta_scheduler is not None and getattr(config, 'reset_beta_scheduler', False):
+                logger.info("Beta scheduler state reset")
+
+        else:
+            # Legacy checkpoint format (just model state dict)
+            model.load_state_dict(checkpoint_data)
+            logger.info("Loaded model state from legacy checkpoint format")
+
+        starting_step = checkpoint_step
+        logger.info(f"Resuming training from step {starting_step}")
+
+        # Log the resumption details
+        import wandb
+        resume_info = {
+            "resumed_from_run": config.checkpoint_wandb_run_id,
+            "resumed_from_artifact": config.checkpoint_artifact_name,
+            "resumed_from_step": starting_step,
+            "reset_optimizer": getattr(config, 'reset_optimizer', False),
+            "reset_beta_scheduler": getattr(config, 'reset_beta_scheduler', False)
+        }
+        wandb.log(resume_info)
+
+    else:
+        logger.info("Starting training from scratch")
+
+    return starting_step, model, optimizer, beta_scheduler
+
+
+def save_model_checkpoint_enhanced(model, optimizer, beta_scheduler, step, save_dir, wandb_project, run_name, run_id):
+    """Enhanced model saving with optimizer and scheduler state"""
+    if step > 0:
+        import wandb
+        import os
+
+        model_artifact = wandb.Artifact(f'model_step_{step}', type='model')
+        model_path = f"{save_dir}/{wandb_project}/{run_name}_{run_id}/step_{step}.pth"
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
+        # Save comprehensive checkpoint
+        checkpoint = {
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'step': step,
+        }
+
+        # Add beta scheduler state if available
+        if beta_scheduler is not None:
+            checkpoint['beta_scheduler_state'] = {
+                'current_step': getattr(beta_scheduler, 'current_step', step),
+                'current_beta': getattr(beta_scheduler, 'current_beta', 1.0)
+            }
+
+            # Add kl_history if it exists (for AdaptiveBetaScheduler)
+            if hasattr(beta_scheduler, 'kl_history'):
+                checkpoint['beta_scheduler_state']['kl_history'] = beta_scheduler.kl_history
+
+        torch.save(checkpoint, model_path)
+        model_artifact.add_file(model_path)
+        wandb.run.log_artifact(model_artifact)
+        logger.info(f"Enhanced checkpoint saved to {model_path}")
+
+    return {}
 
 
 def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function):
@@ -200,7 +426,7 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
     :param offset_loss_fn: loss function for offsets
     :param optimizer: optimizer for training (None for evaluation)
     :param starting_step: initial step count
-    :param beta_scheduler: AdaptiveBetaScheduler instance
+    :param beta_scheduler: BetaAnnealingScheduler instance
     :param scale_h_loss: scaling factor for hit loss
     :param scale_v_loss: scaling factor for velocity loss
     :param scale_o_loss: scaling factor for offset loss
