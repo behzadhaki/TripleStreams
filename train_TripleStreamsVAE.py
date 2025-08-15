@@ -311,7 +311,7 @@ if __name__ == "__main__":
 
     # Setup resumable training (Option 3: Simple approach)
     starting_step, model_on_device, optimizer, beta_scheduler = train_utils.setup_resumable_training(
-        config, model_on_device, optimizer, beta_scheduler
+        config, model_on_device, optimizer, beta_scheduler, wandb_run
     )
 
     # Batch Data IO Extractor
@@ -401,7 +401,7 @@ if __name__ == "__main__":
             config=config,
             subset_tag='test',
             use_cached=True,
-            downsampled_size=50,
+            downsampled_size=200,
             predict_using_batch_data_method=predict_using_batch_data,
             tag_key="collection",
             cached_folder="cached/GrooveEvaluator/templates/PRolls",

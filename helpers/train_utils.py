@@ -140,30 +140,41 @@ class BetaAnnealingScheduler:
         return self.get_beta()
 
 
-def load_checkpoint_from_wandb(wandb_project, run_id, artifact_name, step=None):
+def load_checkpoint_from_wandb(wandb_project, run_id, artifact_name, step=None, wandb_run=None):
     """
-    Load model checkpoint from WandB artifacts
+    Load model checkpoint from WandB artifacts using the newer API
 
     Args:
         wandb_project: WandB project name
-        run_id: WandB run ID
+        run_id: WandB run ID (for backward compatibility, not used with new API)
         artifact_name: Name of the artifact (e.g., 'model_step_10000')
         step: Step number (optional, can be inferred from artifact_name)
+        wandb_run: Active wandb run instance (if None, will use current run)
 
     Returns:
         checkpoint_data, checkpoint_step
     """
     import wandb
 
-    api = wandb.Api()
-
-    # Get the artifact
+    # Use the newer wandb.run.use_artifact() API
     try:
-        artifact = api.artifact(f"behzadhaki/{wandb_project}/{artifact_name}:latest")
+        # Construct the full artifact path
+        # Format: 'entity/project/artifact_name:version'
+        artifact_path = f"behzadhaki/{wandb_project}/{artifact_name}"
+
+        # Use the current run's use_artifact method
+        if wandb_run is None:
+            if wandb.run is None:
+                raise RuntimeError("No active wandb run found. Please ensure wandb.init() has been called.")
+            artifact = wandb.run.use_artifact(artifact_path, type='model')
+        else:
+            artifact = wandb_run.use_artifact(artifact_path, type='model')
+
         artifact_dir = artifact.download()
         logger.info(f"Downloaded artifact {artifact_name} to {artifact_dir}")
     except Exception as e:
         logger.error(f"Failed to download artifact {artifact_name}: {e}")
+        logger.error(f"Tried to access: behzadhaki/{wandb_project}/{artifact_name}")
         raise
 
     # Find the model file
@@ -183,10 +194,15 @@ def load_checkpoint_from_wandb(wandb_project, run_id, artifact_name, step=None):
     if step is None:
         if 'step_' in artifact_name:
             try:
-                step = int(artifact_name.split('step_')[-1])
+                # Handle artifact names with versions (e.g., "model_step_19000:v1")
+                # First remove version if present, then extract step
+                artifact_base = artifact_name.split(':')[0]  # Remove ":v1" part
+                step_part = artifact_base.split('step_')[-1]  # Get "19000"
+                step = int(step_part)
+                logger.info(f"Parsed step {step} from artifact name {artifact_name}")
             except ValueError:
                 step = 0
-                logger.warning("Could not parse step from artifact name, defaulting to 0")
+                logger.warning(f"Could not parse step from artifact name '{artifact_name}', defaulting to 0")
         else:
             step = 0
             logger.warning("Could not determine step from artifact name, defaulting to 0")
@@ -233,7 +249,7 @@ def validate_architecture_compatibility(old_config, new_config):
     return True
 
 
-def setup_resumable_training(config, model, optimizer, beta_scheduler=None):
+def setup_resumable_training(config, model, optimizer, beta_scheduler=None, wandb_run=None):
     """
     Setup training resumption from checkpoint (Option 3: Simple approach)
 
@@ -242,6 +258,7 @@ def setup_resumable_training(config, model, optimizer, beta_scheduler=None):
         model: Model instance
         optimizer: Optimizer instance
         beta_scheduler: Beta scheduler instance (optional)
+        wandb_run: Active wandb run instance (optional)
 
     Returns:
         starting_step, updated_model, updated_optimizer, updated_beta_scheduler
@@ -249,28 +266,32 @@ def setup_resumable_training(config, model, optimizer, beta_scheduler=None):
     starting_step = 0
 
     if getattr(config, 'resume_from_checkpoint', False):
-        if not getattr(config, 'checkpoint_wandb_run_id', None) or not getattr(config, 'checkpoint_artifact_name',
-                                                                               None):
-            raise ValueError("Must specify both checkpoint_wandb_run_id and checkpoint_artifact_name when resuming")
+        if not getattr(config, 'checkpoint_artifact_name', None):
+            raise ValueError("Must specify checkpoint_artifact_name when resuming")
 
-        logger.info(f"Resuming from checkpoint: {config.checkpoint_wandb_run_id}/{config.checkpoint_artifact_name}")
+        logger.info(f"Resuming from checkpoint: {config.checkpoint_artifact_name}")
 
-        # Load checkpoint
+        # Load checkpoint using the new API
         checkpoint_data, checkpoint_step = load_checkpoint_from_wandb(
             config.wandb_project,
-            config.checkpoint_wandb_run_id,
+            getattr(config, 'checkpoint_wandb_run_id', None),  # Not used with new API but kept for compatibility
             config.checkpoint_artifact_name,
-            getattr(config, 'checkpoint_step', None)
+            getattr(config, 'checkpoint_step', None),
+            wandb_run
         )
 
         # Get old configuration from WandB for architecture validation
-        import wandb
-        api = wandb.Api()
-        old_run = api.run(f"behzadhaki/{config.wandb_project}/{config.checkpoint_wandb_run_id}")
-        old_config = old_run.config
+        # We still need the API for accessing run config
+        if getattr(config, 'checkpoint_wandb_run_id', None):
+            import wandb
+            api = wandb.Api()
+            old_run = api.run(f"behzadhaki/{config.wandb_project}/{config.checkpoint_wandb_run_id}")
+            old_config = old_run.config
 
-        # Validate architecture compatibility
-        validate_architecture_compatibility(old_config, config)
+            # Validate architecture compatibility
+            validate_architecture_compatibility(old_config, config)
+        else:
+            logger.warning("No checkpoint_wandb_run_id provided - skipping architecture validation")
 
         # Load model state
         if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
@@ -314,12 +335,14 @@ def setup_resumable_training(config, model, optimizer, beta_scheduler=None):
         # Log the resumption details
         import wandb
         resume_info = {
-            "resumed_from_run": config.checkpoint_wandb_run_id,
             "resumed_from_artifact": config.checkpoint_artifact_name,
             "resumed_from_step": starting_step,
             "reset_optimizer": getattr(config, 'reset_optimizer', False),
             "reset_beta_scheduler": getattr(config, 'reset_beta_scheduler', False)
         }
+        if getattr(config, 'checkpoint_wandb_run_id', None):
+            resume_info["resumed_from_run"] = config.checkpoint_wandb_run_id
+
         wandb.log(resume_info)
 
     else:
