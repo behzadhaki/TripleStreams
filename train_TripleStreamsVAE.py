@@ -233,9 +233,6 @@ if loaded_via_config:
     print(f"Loaded via config file: {args.config}")
 print("|" + "=" * 80 + "|\n\n\n")
 
-if args.wandb_project is not None:
-    hparams["wandb_project"] = args.wandb_project
-
 assert "wandb_project" in hparams.keys(), "wandb_project not specified"
 
 if __name__ == "__main__":
@@ -283,7 +280,8 @@ if __name__ == "__main__":
     # Initialize the model
     model_cpu = TripleStreamsVAE(config)
     model_on_device = model_cpu.to(config.device)
-    wandb.watch(model_on_device, log="all", log_freq=1)
+    # wandb.watch(model_on_device, log="all", log_freq=100)               # <--- Logging at every step will result in super large logs
+    wandb.unwatch(model_on_device)
 
     # Instantiate loss functions and optimizer
     hit_loss_fn = torch.nn.BCEWithLogitsLoss(reduction='none')
