@@ -80,65 +80,144 @@ class AdaptiveBetaScheduler:
 
 
 class BetaAnnealingScheduler:
-    """Beta annealing scheduler that works with training steps"""
+    """Beta annealing scheduler that works with training steps - optimized version"""
 
-    def __init__(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0, beta_level=1.0):
-        self.beta_curve = self.generate_beta_curve_step_based(
-            total_steps, period_steps, rise_ratio, start_first_rise_at_step
-        )
+    def __init__(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0, beta_level=1.0,
+                 gap_ratio=0.0):
+        self.total_steps = total_steps
+        self.period_steps = period_steps
+        self.rise_ratio = rise_ratio
+        self.gap_ratio = gap_ratio  # New parameter for gap between cycles
+        self.start_first_rise_at_step = start_first_rise_at_step
         self.beta_level = beta_level
         self.current_step = 0
 
-    def generate_beta_curve_step_based(self, total_steps, period_steps, rise_ratio, start_first_rise_at_step=0):
-        """Generate a beta curve based on training steps"""
+        # Pre-compute the single cycle for efficiency
+        self.single_cycle = self._generate_single_beta_cycle(period_steps, rise_ratio, gap_ratio)
 
-        def f(x, K):
-            if x == 0:
-                return 0
-            elif x == K:
-                return 1
-            else:
-                return 1 / (1 + np.exp(-10 * (x - K / 2) / K))
+        print(f"BetaAnnealingScheduler initialized:")
+        print(f"  total_steps: {total_steps}")
+        print(f"  period_steps: {period_steps}")
+        print(f"  rise_ratio: {rise_ratio}")
+        print(f"  gap_ratio: {gap_ratio}")
+        print(f"  start_first_rise_at_step: {start_first_rise_at_step}")
+        print(f"  beta_level: {beta_level}")
+        print(f"  single_cycle shape: {self.single_cycle.shape}")
 
-        def generate_rising_curve(K):
-            curve = []
-            for i in range(K):
-                curve.append(f(i, K - 1))
-            return np.array(curve)
+    def _f(self, x, K):
+        """Sigmoid-like function for smooth transitions"""
+        if x == 0:
+            return 0
+        elif x == K:
+            return 1
+        else:
+            return 1 / (1 + np.exp(-10 * (x - K / 2) / K))
 
-        def generate_single_beta_cycle(period, rise_ratio):
-            cycle = np.ones(period)
-            curve_steps = int(period * rise_ratio)
-            rising_curve = generate_rising_curve(curve_steps)
-            cycle[:rising_curve.shape[0]] = rising_curve[:cycle.shape[0]]
-            return cycle
+    def _generate_rising_curve(self, K):
+        """Generate a rising curve of length K"""
+        curve = []
+        for i in range(K):
+            curve.append(self._f(i, K - 1))
+        return np.array(curve)
 
-        beta_curve = np.zeros(start_first_rise_at_step)
-        effective_steps = total_steps - start_first_rise_at_step
-        n_cycles = np.ceil(effective_steps / period_steps)
+    def _generate_single_beta_cycle(self, period, rise_ratio, gap_ratio):
+        """Generate a single beta cycle with optional gap at the end"""
+        cycle = np.ones(period)
 
-        single_cycle = generate_single_beta_cycle(period_steps, rise_ratio)
+        # Calculate the number of steps for each phase
+        rise_steps = int(period * rise_ratio)
+        gap_steps = int(period * gap_ratio)
+        plateau_steps = period - rise_steps - gap_steps
 
-        for c in np.arange(int(n_cycles)):
-            beta_curve = np.append(beta_curve, single_cycle)
+        # Ensure we don't exceed the period
+        if rise_steps + gap_steps > period:
+            gap_steps = max(0, period - rise_steps)
+            plateau_steps = 0
 
-        return beta_curve[:total_steps]
+        # Generate the cycle
+        if rise_steps > 0:
+            rising_curve = self._generate_rising_curve(rise_steps)
+            cycle[:rise_steps] = rising_curve
+
+        # Plateau phase (beta = 1)
+        if plateau_steps > 0:
+            cycle[rise_steps:rise_steps + plateau_steps] = 1.0
+
+        # Gap phase (beta = 0)
+        if gap_steps > 0:
+            cycle[rise_steps + plateau_steps:] = 0.0
+
+        return cycle
 
     def get_beta(self, step=None):
-        """Get beta value for current or specified step"""
+        """Get beta value for current or specified step using modular arithmetic"""
         if step is None:
             step = self.current_step
 
-        if step >= len(self.beta_curve):
-            return self.beta_level
+        # Handle steps before the first rise
+        if step < self.start_first_rise_at_step:
+            return 0.0
 
-        return self.beta_curve[step] * self.beta_level
+        # Calculate position within the cycling phase
+        effective_step = step - self.start_first_rise_at_step
+
+        # Use modulo to find position within current cycle
+        cycle_position = effective_step % self.period_steps
+
+        # Get beta value from the pre-computed single cycle
+        if cycle_position < len(self.single_cycle):
+            beta_value = self.single_cycle[cycle_position]
+        else:
+            # Fallback (shouldn't happen if cycle is generated correctly)
+            beta_value = 1.0
+
+        return beta_value * self.beta_level
 
     def step(self):
         """Increment the step counter"""
         self.current_step += 1
         return self.get_beta()
 
+    def get_cycle_info(self, step=None):
+        """Get debugging information about current cycle position"""
+        if step is None:
+            step = self.current_step
+
+        if step < self.start_first_rise_at_step:
+            return {
+                'step': step,
+                'phase': 'warmup',
+                'cycle_number': 0,
+                'cycle_position': 0,
+                'beta': 0.0
+            }
+
+        effective_step = step - self.start_first_rise_at_step
+        cycle_number = effective_step // self.period_steps
+        cycle_position = effective_step % self.period_steps
+
+        # Determine which phase we're in within the cycle
+        rise_steps = int(self.period_steps * self.rise_ratio)
+        gap_steps = int(self.period_steps * self.gap_ratio)
+        plateau_steps = self.period_steps - rise_steps - gap_steps
+
+        if cycle_position < rise_steps:
+            phase_name = 'rising'
+        elif cycle_position < rise_steps + plateau_steps:
+            phase_name = 'plateau'
+        else:
+            phase_name = 'gap'
+
+        return {
+            'step': step,
+            'phase': phase_name,
+            'cycle_number': cycle_number,
+            'cycle_position': cycle_position,
+            'rise_steps': rise_steps,
+            'plateau_steps': plateau_steps,
+            'gap_steps': gap_steps,
+            'beta': self.get_beta(step)
+        }
 
 def load_checkpoint_from_wandb(wandb_project, run_id, artifact_name, step=None, wandb_run=None):
     """

@@ -76,6 +76,8 @@ parser.add_argument("--beta_annealing_per_cycle_rising_ratio", type=float,
 parser.add_argument("--beta_annealing_activated", help="Use cyclical annealing on KL beta term", type=bool,
                     default=True)
 parser.add_argument("--beta_level", type=float, help="Max level of beta term on KL", default=0.2)
+parser.add_argument("--beta_annealing_gap_ratio", type=float,
+                    help="Gap ratio between cycles of beta annealing", default=0.0)
 
 # ----------------------- Step-Based Logging Parameters -----------------------
 parser.add_argument("--step_log_frequency", type=int, default=50, help="Log metrics to wandb every N steps")
@@ -175,6 +177,7 @@ else:
         beta_annealing_start_first_rise_at_step=args.beta_annealing_start_first_rise_at_step,
         beta_annealing_per_cycle_rising_ratio=args.beta_annealing_per_cycle_rising_ratio,
         beta_annealing_activated=args.beta_annealing_activated,
+        beta_annealing_gap_ratio=args.beta_annealing_gap_ratio,
         beta_level=args.beta_level,
 
         # Step-based logging
@@ -281,7 +284,7 @@ if __name__ == "__main__":
         print_logs=True
     )
 
-    train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=True)
+    train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=False)
 
     test_dataset = get_triplestream_dataset(
         config=config,
@@ -293,15 +296,19 @@ if __name__ == "__main__":
 
     test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
 
+    print(f"\n\n|{len(training_dataset)} training samples and {len(test_dataset)} testing samples loaded|\n\n")
+
     # Setup step-based beta annealing
     if config.beta_annealing_activated:
         steps_per_epoch = len(train_dataloader)
         total_steps = steps_per_epoch * config.epochs
 
+        print (f"\n\n|Setting Up Beta Annealing Scheduler|\n\n")
         beta_scheduler = train_utils.BetaAnnealingScheduler(
             total_steps=total_steps,
             period_steps=config.beta_annealing_period_steps,
             rise_ratio=config.beta_annealing_per_cycle_rising_ratio,
+            gap_ratio=getattr(config, 'beta_annealing_gap_ratio', 0.0),  # Default to 0 for backward compatibility
             start_first_rise_at_step=config.beta_annealing_start_first_rise_at_step,
             beta_level=config.beta_level
         )
@@ -311,6 +318,7 @@ if __name__ == "__main__":
         logger.info("Beta annealing disabled")
 
     # Setup resumable training (Option 3: Simple approach)
+    print("\n\n|Setting up resumable training if needed|\n\n")
     starting_step, model_on_device, optimizer, beta_scheduler = train_utils.setup_resumable_training(
         config, model_on_device, optimizer, beta_scheduler, wandb_run
     )
