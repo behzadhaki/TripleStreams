@@ -219,6 +219,7 @@ class BetaAnnealingScheduler:
             'beta': self.get_beta(step)
         }
 
+
 def load_checkpoint_from_wandb(wandb_project, run_id, artifact_name, step=None, wandb_run=None):
     """
     Load model checkpoint from WandB artifacts using the newer API
