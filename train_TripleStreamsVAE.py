@@ -30,7 +30,8 @@ parser.add_argument("--wandb_project", type=str, help="WANDB Project Name", defa
 parser.add_argument("--resume_from_checkpoint", type=bool, help="Resume training from checkpoint", default=False)
 parser.add_argument("--checkpoint_wandb_run_id", type=str, help="WandB run ID to resume from", default=None)
 parser.add_argument("--checkpoint_step", type=int, help="Step number to resume from (optional)", default=None)
-parser.add_argument("--checkpoint_artifact_name", type=str, help="Name of model artifact (e.g., model_step_10000)", default=None)
+parser.add_argument("--checkpoint_artifact_name", type=str, help="Name of model artifact (e.g., model_step_10000)",
+                    default=None)
 parser.add_argument("--reset_optimizer", type=bool, help="Reset optimizer state when resuming", default=False)
 parser.add_argument("--reset_beta_scheduler", type=bool, help="Reset beta scheduler when resuming", default=False)
 
@@ -66,23 +67,32 @@ parser.add_argument("--n_decoding_control1_tokens", type=int, help="Number of to
 parser.add_argument("--n_decoding_control2_tokens", type=int, help="Number of tokens", default=10)
 parser.add_argument("--n_decoding_control3_tokens", type=int, help="Number of tokens", default=10)
 
-# ----------------------- Step-Based Beta Annealing Parameters -----------------------
-parser.add_argument("--beta_annealing_period_steps", type=int, default=25000,
-                    help="Number of steps for each cycle of Beta annealing")
-parser.add_argument("--beta_annealing_start_first_rise_at_step", type=int, default=5000,
-                    help="Warm up steps before starting the first cycle")
+# ----------------------- Epoch-Percentage-Based Beta Annealing Parameters -----------------------
+parser.add_argument("--beta_annealing_period_epoch_pct", type=float, default=100.0,
+                    help="Beta annealing period as percentage of epoch (100.0 = 1 full epoch per cycle)")
+parser.add_argument("--beta_annealing_start_first_rise_at_epoch_pct", type=float, default=20.0,
+                    help="Start first beta rise at this epoch percentage (20.0 = after 20% of first epoch)")
 parser.add_argument("--beta_annealing_per_cycle_rising_ratio", type=float,
                     help="rising ratio in each cycle to anneal beta", default=0.5)
+parser.add_argument("--beta_annealing_gap_ratio", type=float, default=0.0,
+                    help="Gap ratio at end of each cycle (0.0-1.0)")
 parser.add_argument("--beta_annealing_activated", help="Use cyclical annealing on KL beta term", type=bool,
                     default=True)
 parser.add_argument("--beta_level", type=float, help="Max level of beta term on KL", default=0.2)
-parser.add_argument("--beta_annealing_gap_ratio", type=float,
-                    help="Gap ratio between cycles of beta annealing", default=0.0)
 
-# ----------------------- Step-Based Logging Parameters -----------------------
-parser.add_argument("--step_log_frequency", type=int, default=50, help="Log metrics to wandb every N steps")
-parser.add_argument("--step_hit_score_frequency", type=int, default=2000, help="Calculate hit scores every N steps")
-parser.add_argument("--step_piano_roll_frequency", type=int, default=1500, help="Generate piano rolls every N steps")
+# ----------------------- Epoch-Percentage-Based Logging Parameters -----------------------
+parser.add_argument("--step_log_frequency_epoch_pct", type=float, default=1.0,
+                    help="Log metrics to wandb every N%% of epoch (1.0 = every 1%% of epoch)")
+parser.add_argument("--step_hit_score_frequency_epoch_pct", type=float, default=50.0,
+                    help="Calculate hit scores every N%% of epoch (50.0 = every 50%% of epoch)")
+parser.add_argument("--step_piano_roll_frequency_epoch_pct", type=float, default=200.0,
+                    help="Generate piano rolls every N%% of epoch (200.0 = every 2 epochs)")
+parser.add_argument("--save_model_frequency_epoch_pct", type=float, default=500.0,
+                    help="Save model every N%% of epoch (500.0 = every 5 epochs)")
+
+# ----------------------- Training Control -----------------------
+parser.add_argument("--start_shuffle_on_epoch", type=float, default=0.0,
+                    help="Start shuffling dataloader from this epoch (0.0 = shuffle from start, 5.5 = start at epoch 5.5)")
 
 # ----------------------- Training Parameters -----------------------
 parser.add_argument("--dropout", type=float, help="Dropout", default=0.1)
@@ -121,11 +131,99 @@ parser.add_argument("--piano_roll_samples", type=bool, help="Generate piano roll
 # ----------------------- Model Saving Params -----------------------
 parser.add_argument("--save_model", type=bool, help="Save model", default=True)
 parser.add_argument("--save_model_dir", type=str, help="Path to save the model", default="misc/TripleStreamsVAE")
-parser.add_argument("--save_model_frequency_steps", type=int, help="Save model every n steps", default=10000)
 
 args, unknown = parser.parse_known_args()
 if unknown:
     logger.warning(f"Unknown arguments: {unknown}")
+
+
+def convert_epoch_percentages_to_steps(config, steps_per_epoch):
+    """
+    Convert all epoch percentage parameters to step-based parameters
+
+    Args:
+        config: Configuration object with epoch percentage parameters
+        steps_per_epoch: Number of steps per epoch
+
+    Returns:
+        dict: Step-based parameters for backward compatibility
+    """
+
+    def epoch_pct_to_steps(epoch_pct, min_steps=1):
+        """Convert epoch percentage to steps"""
+        return max(min_steps, int(steps_per_epoch * epoch_pct / 100.0))
+
+    # Convert beta annealing parameters
+    beta_params = {
+        'beta_annealing_period_steps': epoch_pct_to_steps(
+            getattr(config, 'beta_annealing_period_epoch_pct', 100.0)
+        ),
+        'beta_annealing_start_first_rise_at_step': epoch_pct_to_steps(
+            getattr(config, 'beta_annealing_start_first_rise_at_epoch_pct', 20.0)
+        ),
+    }
+
+    # Convert logging frequencies
+    logging_params = {
+        'step_log_frequency': epoch_pct_to_steps(
+            getattr(config, 'step_log_frequency_epoch_pct', 1.0)
+        ),
+        'step_hit_score_frequency': epoch_pct_to_steps(
+            getattr(config, 'step_hit_score_frequency_epoch_pct', 50.0)
+        ),
+        'step_piano_roll_frequency': epoch_pct_to_steps(
+            getattr(config, 'step_piano_roll_frequency_epoch_pct', 200.0)
+        ),
+        'save_model_frequency_steps': epoch_pct_to_steps(
+            getattr(config, 'save_model_frequency_epoch_pct', 500.0)
+        ),
+    }
+
+    # Convert shuffle epoch to step
+    shuffle_params = {
+        'start_shuffle_on_step': epoch_pct_to_steps(
+            getattr(config, 'start_shuffle_on_epoch', 0.0) * 100.0,  # Convert epoch to epoch_pct
+            min_steps=0
+        ),
+    }
+
+    # Print conversion summary
+    print(f"\n{'=' * 80}")
+    print(f"EPOCH PERCENTAGE TO STEPS CONVERSION SUMMARY")
+    print(f"{'=' * 80}")
+    print(f"Steps per epoch: {steps_per_epoch}")
+    print(f"\nBeta Annealing Parameters:")
+    print(
+        f"  Period: {getattr(config, 'beta_annealing_period_epoch_pct', 100.0):.1f}% epoch → {beta_params['beta_annealing_period_steps']} steps")
+    print(
+        f"  Start rise: {getattr(config, 'beta_annealing_start_first_rise_at_epoch_pct', 20.0):.1f}% epoch → {beta_params['beta_annealing_start_first_rise_at_step']} steps")
+
+    print(f"\nLogging Frequencies:")
+    print(
+        f"  Log: {getattr(config, 'step_log_frequency_epoch_pct', 1.0):.1f}% epoch → every {logging_params['step_log_frequency']} steps")
+    print(
+        f"  Hit scores: {getattr(config, 'step_hit_score_frequency_epoch_pct', 50.0):.1f}% epoch → every {logging_params['step_hit_score_frequency']} steps")
+    print(
+        f"  Piano rolls: {getattr(config, 'step_piano_roll_frequency_epoch_pct', 200.0):.1f}% epoch → every {logging_params['step_piano_roll_frequency']} steps")
+    print(
+        f"  Save model: {getattr(config, 'save_model_frequency_epoch_pct', 500.0):.1f}% epoch → every {logging_params['save_model_frequency_steps']} steps")
+
+    print(f"\nShuffle Control:")
+    print(
+        f"  Start shuffle: epoch {getattr(config, 'start_shuffle_on_epoch', 0.0):.1f} → step {shuffle_params['start_shuffle_on_step']}")
+    print(f"{'=' * 80}\n")
+
+    # Combine all parameters
+    converted_params = {**beta_params, **logging_params, **shuffle_params}
+
+    return converted_params
+
+
+def create_dataloader_with_conditional_shuffle(dataset, batch_size, current_step, start_shuffle_step):
+    """Create DataLoader with shuffle control based on current step"""
+    should_shuffle = current_step >= start_shuffle_step
+    return DataLoader(dataset, batch_size=batch_size, shuffle=should_shuffle)
+
 
 # Load configuration
 loaded_via_config = False
@@ -172,18 +270,22 @@ else:
         velocity_dropout=args.velocity_dropout,
         offset_dropout=args.offset_dropout,
 
-        # Step-based beta annealing
-        beta_annealing_period_steps=args.beta_annealing_period_steps,
-        beta_annealing_start_first_rise_at_step=args.beta_annealing_start_first_rise_at_step,
+        # Epoch-percentage-based beta annealing
+        beta_annealing_period_epoch_pct=args.beta_annealing_period_epoch_pct,
+        beta_annealing_start_first_rise_at_epoch_pct=args.beta_annealing_start_first_rise_at_epoch_pct,
         beta_annealing_per_cycle_rising_ratio=args.beta_annealing_per_cycle_rising_ratio,
-        beta_annealing_activated=args.beta_annealing_activated,
         beta_annealing_gap_ratio=args.beta_annealing_gap_ratio,
+        beta_annealing_activated=args.beta_annealing_activated,
         beta_level=args.beta_level,
 
-        # Step-based logging
-        step_log_frequency=args.step_log_frequency,
-        step_hit_score_frequency=args.step_hit_score_frequency,
-        step_piano_roll_frequency=args.step_piano_roll_frequency,
+        # Epoch-percentage-based logging
+        step_log_frequency_epoch_pct=args.step_log_frequency_epoch_pct,
+        step_hit_score_frequency_epoch_pct=args.step_hit_score_frequency_epoch_pct,
+        step_piano_roll_frequency_epoch_pct=args.step_piano_roll_frequency_epoch_pct,
+        save_model_frequency_epoch_pct=args.save_model_frequency_epoch_pct,
+
+        # Shuffle control
+        start_shuffle_on_epoch=args.start_shuffle_on_epoch,
 
         # Loss scaling
         scale_h_loss=args.scale_h_loss,
@@ -201,9 +303,6 @@ else:
         # Data parameters
         dataset_root_path=args.dataset_root_path,
         dataset_files=args.dataset_files,
-
-        # Model saving
-        save_model_frequency_steps=args.save_model_frequency_steps,
 
         # Checkpoint resume parameters
         resume_from_checkpoint=args.resume_from_checkpoint,
@@ -261,8 +360,6 @@ if __name__ == "__main__":
     # Initialize the model
     model_cpu = TripleStreamsVAE(config)
     model_on_device = model_cpu.to(config.device)
-    # wandb.watch(model_on_device, log="all", log_freq=100)               # <--- Logging at every step will result in super large logs
-    # wandb.unwatch(model_on_device)
 
     # Instantiate loss functions and optimizer
     hit_loss_fn = torch.nn.BCEWithLogitsLoss(reduction='none')
@@ -284,8 +381,6 @@ if __name__ == "__main__":
         print_logs=True
     )
 
-    train_dataloader = DataLoader(training_dataset, batch_size=config.batch_size, shuffle=False)
-
     test_dataset = get_triplestream_dataset(
         config=config,
         subset_tag="test",
@@ -294,22 +389,23 @@ if __name__ == "__main__":
         print_logs=True
     )
 
-    test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
-
     print(f"\n\n|{len(training_dataset)} training samples and {len(test_dataset)} testing samples loaded|\n\n")
 
-    # Setup step-based beta annealing
+    # Calculate steps per epoch and convert epoch percentages to steps
+    steps_per_epoch = len(DataLoader(training_dataset, batch_size=config.batch_size, shuffle=False))
+    converted_params = convert_epoch_percentages_to_steps(config, steps_per_epoch)
+
+    # Setup step-based beta annealing using converted parameters
     if config.beta_annealing_activated:
-        steps_per_epoch = len(train_dataloader)
         total_steps = steps_per_epoch * config.epochs
 
-        print (f"\n\n|Setting Up Beta Annealing Scheduler|\n\n")
+        print(f"\n\n|Setting Up Beta Annealing Scheduler|\n\n")
         beta_scheduler = train_utils.BetaAnnealingScheduler(
             total_steps=total_steps,
-            period_steps=config.beta_annealing_period_steps,
+            period_steps=converted_params['beta_annealing_period_steps'],
             rise_ratio=config.beta_annealing_per_cycle_rising_ratio,
-            gap_ratio=getattr(config, 'beta_annealing_gap_ratio', 0.0),  # Default to 0 for backward compatibility
-            start_first_rise_at_step=config.beta_annealing_start_first_rise_at_step,
+            gap_ratio=getattr(config, 'beta_annealing_gap_ratio', 0.0),
+            start_first_rise_at_step=converted_params['beta_annealing_start_first_rise_at_step'],
             beta_level=config.beta_level
         )
         logger.info(f"Using step-based beta annealing with {total_steps} total steps")
@@ -317,11 +413,12 @@ if __name__ == "__main__":
         beta_scheduler = None
         logger.info("Beta annealing disabled")
 
-    # Setup resumable training (Option 3: Simple approach)
+    # Setup resumable training
     print("\n\n|Setting up resumable training if needed|\n\n")
     starting_step, model_on_device, optimizer, beta_scheduler = train_utils.setup_resumable_training(
         config, model_on_device, optimizer, beta_scheduler, wandb_run
     )
+
 
     # Batch Data IO Extractor
     def batch_data_extractor(data_, device=config.device):
@@ -375,7 +472,6 @@ if __name__ == "__main__":
     # Setup evaluation callbacks for step-based evaluation
     def quick_hit_scores_train(step):
         """Quick hit score evaluation for training set"""
-        # logger.info(f"Step {step}: Calculating Hit Scores on Train Set")
         train_set_hit_scores, _ = eval_utils.get_hit_scores(
             config=config,
             subset_tag='train',
@@ -390,7 +486,6 @@ if __name__ == "__main__":
 
     def quick_hit_scores_test(step):
         """Quick hit score evaluation for test set"""
-        # logger.info(f"Step {step}: Calculating Hit Scores on Test Set")
         test_set_hit_scores, _ = eval_utils.get_hit_scores(
             config=config,
             subset_tag='test',
@@ -405,7 +500,6 @@ if __name__ == "__main__":
 
     def piano_roll_generation(step):
         """Generate piano rolls for visualization"""
-        # logger.info(f"Step {step}: Generating Piano Rolls")
         media, _ = eval_utils.get_pianoroll_for_wandb(
             config=config,
             subset_tag='test',
@@ -431,46 +525,63 @@ if __name__ == "__main__":
         )
 
 
-    # Define evaluation callbacks
-    eval_callbacks = {}
-
-    if args.calculate_hit_scores_on_train:
-        eval_callbacks['hit_scores_train'] = {
-            'function': quick_hit_scores_train,
-            'frequency': config.step_hit_score_frequency
-        }
-
-    if args.calculate_hit_scores_on_test:
-        eval_callbacks['hit_scores_test'] = {
-            'function': quick_hit_scores_test,
-            'frequency': config.step_hit_score_frequency
-        }
-
-    if args.piano_roll_samples:
-        eval_callbacks['piano_rolls'] = {
-            'function': piano_roll_generation,
-            'frequency': config.step_piano_roll_frequency
-        }
-
-    if args.save_model:
-        eval_callbacks['save_model'] = {
-            'function': save_model_checkpoint,
-            'frequency': config.save_model_frequency_steps
-        }
-
-    # Training loop
+    # Training loop with dynamic shuffle control
     step_ = starting_step
 
     for epoch in range(config.epochs):
-        print("\n\n|" + "=" * 50 + "|")
-        print(f"\t\tEpoch {epoch} of {config.epochs}, steps so far {step_}")
-        if starting_step > 0:
+        print("\n\n|" + "=" * 70 + "|")
+        print(f"\t\tEpoch {epoch} of {config.epochs}")
+        print(f"\t\tSteps so far: {step_}")
+        if starting_step > 0 and epoch == 0:
             print(f"\t\tResumed from step {starting_step}")
-        print("|" + "=" * 50 + "|")
+
+        # Check shuffle status for this epoch
+        shuffle_enabled = step_ >= converted_params['start_shuffle_on_step']
+        shuffle_status = "ON" if shuffle_enabled else "OFF"
+        print(f"\t\tDataLoader shuffle: {shuffle_status}")
+        if not shuffle_enabled and step_ + steps_per_epoch >= converted_params['start_shuffle_on_step']:
+            print(
+                f"\t\t*** Shuffle will START during this epoch at step {converted_params['start_shuffle_on_step']} ***")
+        print("|" + "=" * 70 + "|")
+
+        # Create DataLoaders with conditional shuffle based on current step
+        train_dataloader = create_dataloader_with_conditional_shuffle(
+            training_dataset, config.batch_size, step_, converted_params['start_shuffle_on_step']
+        )
+        test_dataloader = create_dataloader_with_conditional_shuffle(
+            test_dataset, config.batch_size, step_, converted_params['start_shuffle_on_step']
+        )
+
+        # Define evaluation callbacks with converted step frequencies
+        eval_callbacks = {}
+
+        if args.calculate_hit_scores_on_train:
+            eval_callbacks['hit_scores_train'] = {
+                'function': quick_hit_scores_train,
+                'frequency': converted_params['step_hit_score_frequency']
+            }
+
+        if args.calculate_hit_scores_on_test:
+            eval_callbacks['hit_scores_test'] = {
+                'function': quick_hit_scores_test,
+                'frequency': converted_params['step_hit_score_frequency']
+            }
+
+        if args.piano_roll_samples:
+            eval_callbacks['piano_rolls'] = {
+                'function': piano_roll_generation,
+                'frequency': converted_params['step_piano_roll_frequency']
+            }
+
+        if args.save_model:
+            eval_callbacks['save_model'] = {
+                'function': save_model_checkpoint,
+                'frequency': converted_params['save_model_frequency_steps']
+            }
 
         # Training phase
         model_on_device.train()
-        logger.info("\n***************************Training...")
+        logger.info(f"\n***************************Training epoch {epoch}...")
 
         train_log_metrics, step_ = train_utils.train_loop_step_based(
             train_dataloader=train_dataloader,
@@ -484,7 +595,7 @@ if __name__ == "__main__":
             scale_h_loss=config.scale_h_loss,
             scale_v_loss=config.scale_v_loss,
             scale_o_loss=config.scale_o_loss,
-            log_frequency=config.step_log_frequency,
+            log_frequency=converted_params['step_log_frequency'],
             eval_callbacks=eval_callbacks
         )
 
@@ -495,10 +606,15 @@ if __name__ == "__main__":
 
         # Testing phase
         model_on_device.eval()
-        logger.info("\n***************************Testing...")
+        logger.info(f"\n***************************Testing epoch {epoch}...")
+
+        # Create fresh test dataloader for testing phase (may have different shuffle state)
+        test_dataloader_eval = create_dataloader_with_conditional_shuffle(
+            test_dataset, config.batch_size, step_, converted_params['start_shuffle_on_step']
+        )
 
         test_log_metrics, _ = train_utils.test_loop_step_based(
-            test_dataloader=test_dataloader,
+            test_dataloader=test_dataloader_eval,
             forward_method=forward_using_batch_data,
             hit_loss_fn=hit_loss_fn,
             velocity_loss_fn=velocity_loss_fn,
@@ -508,7 +624,7 @@ if __name__ == "__main__":
             scale_h_loss=config.scale_h_loss,
             scale_v_loss=config.scale_v_loss,
             scale_o_loss=config.scale_o_loss,
-            log_frequency=config.step_log_frequency
+            log_frequency=converted_params['step_log_frequency']
         )
 
         wandb.log(test_log_metrics, commit=False)
@@ -516,13 +632,46 @@ if __name__ == "__main__":
         if config.device == 'cuda':
             torch.cuda.empty_cache()
 
-        logger.info(
-            f"Epoch {epoch} Finished with total train loss of {train_log_metrics.get('Train_Epoch_Metrics/loss_total_rec_w_kl', 'N/A')} "
-            f"and test loss of {test_log_metrics.get('Test_Epoch_Metrics/loss_total_rec_w_kl', 'N/A')}")
+        # Log epoch-level information
+        epoch_info = {
+            "epoch": epoch,
+            "shuffle_enabled": step_ >= converted_params['start_shuffle_on_step'],
+            "steps_per_epoch": steps_per_epoch,
+            "current_epoch_from_steps": step_ / steps_per_epoch,
+        }
 
-        wandb.log({"epoch": epoch}, step=step_)
+        # Add beta scheduler info if available
+        if beta_scheduler is not None:
+            cycle_info = beta_scheduler.get_cycle_info(step_)
+            epoch_info.update({
+                "beta_cycle_number": cycle_info['cycle_number'],
+                "beta_phase": cycle_info['phase'],
+                "current_beta": cycle_info['beta']
+            })
+
+        wandb.log(epoch_info, step=step_)
+
+        logger.info(
+            f"Epoch {epoch} completed - Train loss: "
+            f"{train_log_metrics.get('Train_Epoch_Metrics/loss_total_rec_w_kl', 'N/A'):.4f}, "
+            f"Test loss: {test_log_metrics.get('Test_Epoch_Metrics/loss_total_rec_w_kl', 'N/A'):.4f}"
+        )
 
         if config.device == 'cuda':
             torch.cuda.empty_cache()
+
+    # Final summary
+    print(f"\n\n{'=' * 80}")
+    print(f"TRAINING COMPLETED SUCCESSFULLY")
+    print(f"{'=' * 80}")
+    print(f"Final step: {step_}")
+    print(f"Total epochs completed: {config.epochs}")
+    print(f"Final epoch from steps: {step_ / steps_per_epoch:.2f}")
+    if beta_scheduler is not None:
+        final_cycle_info = beta_scheduler.get_cycle_info(step_)
+        print(f"Final beta cycle: {final_cycle_info['cycle_number']}")
+        print(f"Final beta phase: {final_cycle_info['phase']}")
+        print(f"Final beta value: {final_cycle_info['beta']:.4f}")
+    print(f"{'=' * 80}\n")
 
     wandb.finish()
