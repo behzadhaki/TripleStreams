@@ -255,6 +255,22 @@ if __name__ == "__main__":
     run_name = wandb_run.name
     run_id = wandb_run.id
 
+    # Initialize the model
+    model_cpu = TripleStreamsVAE(config)
+    model_on_device = model_cpu.to(config.device)
+    # wandb.watch(model_on_device, log="all", log_freq=100)               # <--- Logging at every step will result in super large logs
+    # wandb.unwatch(model_on_device)
+
+    # Instantiate loss functions and optimizer
+    hit_loss_fn = torch.nn.BCEWithLogitsLoss(reduction='none')
+    velocity_loss_fn = torch.nn.MSELoss(reduction='none')
+    offset_loss_fn = torch.nn.MSELoss(reduction='none')
+
+    if config.optimizer == 'adam':
+        optimizer = torch.optim.Adam(model_on_device.parameters(), lr=config.lr)
+    else:
+        optimizer = torch.optim.SGD(model_on_device.parameters(), lr=config.lr)
+
     # Load Training and Testing Datasets
     training_dataset = get_triplestream_dataset(
         config=config,
@@ -276,22 +292,6 @@ if __name__ == "__main__":
     )
 
     test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
-
-    # Initialize the model
-    model_cpu = TripleStreamsVAE(config)
-    model_on_device = model_cpu.to(config.device)
-    # wandb.watch(model_on_device, log="all", log_freq=100)               # <--- Logging at every step will result in super large logs
-    wandb.unwatch(model_on_device)
-
-    # Instantiate loss functions and optimizer
-    hit_loss_fn = torch.nn.BCEWithLogitsLoss(reduction='none')
-    velocity_loss_fn = torch.nn.MSELoss(reduction='none')
-    offset_loss_fn = torch.nn.MSELoss(reduction='none')
-
-    if config.optimizer == 'adam':
-        optimizer = torch.optim.Adam(model_on_device.parameters(), lr=config.lr)
-    else:
-        optimizer = torch.optim.SGD(model_on_device.parameters(), lr=config.lr)
 
     # Setup step-based beta annealing
     if config.beta_annealing_activated:
