@@ -1,7 +1,7 @@
 # Checkpoint resume settings
 resume_from_checkpoint: True
-checkpoint_artifact_name: "model_step_19000:v1"  # Replace with actual artifact name
-checkpoint_wandb_run_id: "d97fifkj"  # ADD THIS for architecture validation
+checkpoint_artifact_name: "model_step_100000:v0"  # Replace with actual artifact name
+checkpoint_wandb_run_id: "57vdsaw8"  # ADD THIS for architecture validation
 reset_optimizer: True  # Set to True when changing learning rate significantly
 reset_beta_scheduler: False  # Set to True when changing beta annealing params
 
