@@ -8,7 +8,7 @@
 #reset_optimizer: True  # Set to True when changing learning rate significantly
 #reset_beta_scheduler: False  # Set to True when changing beta annealing params
 
-wandb_project: "FlexControlTripleStreamsVAE_converted"
+wandb_project: "FlexControlTripleStreamsVAE_newRuns"
 
 # ===================================================================================
 # Dataset Settings
@@ -81,14 +81,14 @@ num_decoder_layers: 7
 # ===================================================================================
 
 # Encoding Controls (converted from legacy encoding_control1/2)
-n_encoding_control_tokens: [33, 10]  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
-encoding_control_modes: ['prepend', 'add']  # Strategic: first prepended, second added
+n_encoding_control_tokens: [33, 5]  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
+encoding_control_modes: ['prepend', 'prepend']  # Strategic: first prepended, second added
 encoding_control_keys:
   - "Flat Out Vs. Input | Hits | Hamming"     # Was: encoding_control1_key
   - "Flat Out Vs. Input | Accent | Hamming"   # Was: encoding_control2_key
 
 # Decoding Controls (converted from legacy decoding_control1/2/3)
-n_decoding_control_tokens: [10, 10, 10]  # Was: n_decoding_control1/2/3_tokens: 10
+n_decoding_control_tokens: [6, 6, 6]  # Was: n_decoding_control1/2/3_tokens: 10
 decoding_control_modes: ['prepend', 'prepend', 'prepend']  # All prepended (legacy behavior)
 decoding_control_keys:
   - "Stream 1 Vs. Flat Out | Hits | Hamming"  # Was: decoding_control1_key
@@ -100,7 +100,7 @@ decoding_control_keys:
 # ===================================================================================
 
 epochs: 1000
-batch_size: 64
+batch_size: 256
 
 # Optimizer settings
 lr: 0.00006369948608989782
