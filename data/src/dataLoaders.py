@@ -762,6 +762,18 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                         loaded_data_dictionary[k].extend(v)
                 n_samples += len(temp["metadata"])
 
+            # Check if relative hit density is present
+            if " Relative Density" not in loaded_data_dictionary:
+                stream_1_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 0], axis=-1)
+                stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
+                stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
+
+                total_hits = stream_1_hits + stream_2_hits + stream_3_hits
+
+                loaded_data_dictionary["Stream 1 Relative Density"] = stream_1_hits / total_hits
+                loaded_data_dictionary["Stream 2 Relative Density"] = stream_2_hits / total_hits
+                loaded_data_dictionary["Stream 3 Relative Density"] = stream_3_hits / total_hits
+
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
                     downsampled_size = None
@@ -818,12 +830,21 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             # Create decoding control tokens tensor
             decoding_tokens_list = []
             for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
-                if key in loaded_data_dictionary:
+                if "hamming" in key:
+                    assert key in self.encoding_control_keys, f"Decoding control key '{key}' should be in encoding controls"
                     tokens = TokenizeControls(
                         control_array=np.round(loaded_data_dictionary[key], 5),
                         n_bins=n_tokens,
                         low=0,
                         high=0.85
+                    )
+                    decoding_tokens_list.append(tokens)
+                elif " Relative Density" in key:
+                    tokens = TokenizeControls(
+                        control_array=np.round(loaded_data_dictionary[key], 5),
+                        n_bins=n_tokens,
+                        low=0,
+                        high=1
                     )
                     decoding_tokens_list.append(tokens)
                 else:

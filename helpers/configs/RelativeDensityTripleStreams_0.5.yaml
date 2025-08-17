@@ -3,12 +3,12 @@
 
 # Checkpoint resume settings - Updated for FlexControl compatibility
 #resume_from_checkpoint: True
-#checkpoint_artifact_name: "model_step_1:v0"  # Replace with actual artifact name
-#checkpoint_wandb_run_id: "flzspye9"  # Legacy run ID - automatic conversion supported
+#checkpoint_artifact_name: "model_step_190000:v0"  # Replace with actual artifact name
+#checkpoint_wandb_run_id: "rf9cn70h"  # Legacy run ID - automatic conversion supported
 #reset_optimizer: True  # Set to True when changing learning rate significantly
 #reset_beta_scheduler: False  # Set to True when changing beta annealing params
 
-wandb_project: "FlexControlTripleStreamsVAE_converted"
+wandb_project: "FlexControlTripleStreamsVAE_newRuns"
 
 # ===================================================================================
 # Dataset Settings
@@ -20,6 +20,44 @@ dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 
 dataset_files:
     - 01_candombe_four_voices.pkl.bz2
+    - 02_elbg_both_flattened_left_right.pkl.bz2
+    - 03_groove_midi_crash_hhclosed_hhopen_ride.pkl.bz2
+    - 04_groove_midi_hh_kick_snare_toms.pkl.bz2
+    - 05_groove_midi_hi_lo_mid_ride.pkl.bz2
+    - 06_lmd_bass_brass_drum_percussion.pkl.bz2
+    - 07_lmd_bass_brass_drum_percussive.pkl.bz2
+    - 08_lmd_bass_brass_guitar_percussion.pkl.bz2
+    - 09_lmd_bass_brass_guitar_percussive.pkl.bz2
+    - 10_lmd_bass_brass_guitar_piano.pkl.bz2
+    - 11_lmd_bass_brass_percussion_percussive.pkl.bz2
+    - 12_lmd_bass_brass_percussion_piano.pkl.bz2
+    - 13_lmd_bass_brass_percussive_piano.pkl.bz2
+    - 14_lmd_bass_drum_guitar_percussion.pkl.bz2
+    - 15_lmd_bass_drum_guitar_percussive.pkl.bz2
+    - 16_lmd_bass_drum_percussion_percussive.pkl.bz2
+    - 17_lmd_bass_drum_percussion_piano.pkl.bz2
+    - 18_lmd_bass_drum_percussive_piano.pkl.bz2
+    - 19_lmd_bass_guitar_percussion_percussive.pkl.bz2
+    - 20_lmd_bass_guitar_percussion_piano.pkl.bz2
+    - 21_lmd_bass_guitar_percussive_piano.pkl.bz2
+    - 22_lmd_bass_percussion_percussive_piano.pkl.bz2
+    - 23_lmd_brass_drum_guitar_percussion.pkl.bz2
+    - 24_lmd_brass_drum_guitar_percussive.pkl.bz2
+    - 25_lmd_brass_drum_guitar_piano.pkl.bz2
+    - 26_lmd_brass_drum_percussion_percussive.pkl.bz2
+    - 27_lmd_brass_drum_percussion_piano.pkl.bz2
+    - 28_lmd_brass_drum_percussive_piano.pkl.bz2
+    - 29_lmd_brass_guitar_percussion_percussive.pkl.bz2
+    - 30_lmd_brass_guitar_percussion_piano.pkl.bz2
+    - 31_lmd_brass_guitar_percussive_piano.pkl.bz2
+    - 32_lmd_brass_percussion_percussive_piano.pkl.bz2
+    - 33_lmd_drum_guitar_percussion_percussive.pkl.bz2
+    - 34_lmd_drum_guitar_percussion_piano.pkl.bz2
+    - 35_lmd_drum_guitar_percussive_piano.pkl.bz2
+    - 36_lmd_drum_percussion_percussive_piano.pkl.bz2
+    - 37_lmd_guitar_percussion_percussive_piano.pkl.bz2
+    - 38_ttd_both-is-and_both_flattened_left_right.pkl.bz2
+    - 39_ttd_both-is-or_both_flattened_left_right.pkl.bz2
 
 # ===================================================================================
 # Model parameters
@@ -62,7 +100,7 @@ decoding_control_keys:
 # ===================================================================================
 
 epochs: 1000
-batch_size: 64
+batch_size: 256
 
 # Optimizer settings
 lr: 0.00006369948608989782
@@ -92,8 +130,8 @@ beta_level: 0.5
 
 # Epoch Percentage-based logging frequencies
 step_log_frequency_epoch_pct: 0.05                       # Log every 0.05% = every 0.0005 epochs
-step_hit_score_frequency_epoch_pct: 15.0                 # Hit scores every 10% = every 0.1 epochs
-step_piano_roll_frequency_epoch_pct: 10.0                # Piano rolls every 25% = every 0.25 epochs
+step_hit_score_frequency_epoch_pct: 10.0                 # Hit scores every 10% = every 0.1 epochs
+step_piano_roll_frequency_epoch_pct: 25.0                # Piano rolls every 25% = every 0.25 epochs
 
 # Evaluation settings
 calculate_hit_scores_on_train: true
@@ -102,8 +140,8 @@ piano_roll_samples: true
 
 # Model saving
 save_model: true
-save_model_frequency_epoch_pct: 10.0                     # Save model every 40% = every 0.4 epochs
+save_model_frequency_epoch_pct: 40.0                     # Save model every 40% = every 0.4 epochs
 save_model_dir: "misc/FlexControlTripleStreamsVAE"
 
 # Testing
-is_testing: true
+is_testing: false
