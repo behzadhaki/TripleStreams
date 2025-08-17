@@ -8,7 +8,7 @@
 #reset_optimizer: True  # Set to True when changing learning rate significantly
 #reset_beta_scheduler: False  # Set to True when changing beta annealing params
 
-wandb_project: "FlexControlTripleStreamsVAE_newRuns"
+wandb_project: "FlexControlTripleStreamsVAE_RelDensity_newRuns"
 
 # ===================================================================================
 # Dataset Settings

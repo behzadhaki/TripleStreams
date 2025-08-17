@@ -766,7 +766,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             if " Relative Density" not in loaded_data_dictionary:
                 stream_1_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 0], axis=-1)
                 stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
-                stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
+                stream_3_hits = np.sum(np.array(loaded_data_dictionsary["output_hvos"])[:, :, 2], axis=-1)
 
                 total_hits = stream_1_hits + stream_2_hits + stream_3_hits
 
