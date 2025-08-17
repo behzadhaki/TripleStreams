@@ -2,7 +2,7 @@
 #SBATCH -J TripleStreams
 #SBATCH -p high
 #SBATCH -N 1
-#SBATCH --gres=gpu:quadro:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=32g
 #SBATCH --time=48:00:00
@@ -27,4 +27,4 @@ python -m wandb login
 # Run your codes here
 
 cd TripleStreams
-python train_FlexControlTripleStreamsVAE.py --config helpers/configs/RelativeDensityTripleStreams_0.5.yaml --device cuda --move_all_to_cuda true
+python train_FlexControlTripleStreamsVAE.py --config helpers/configs/RelativeDensityTripleStreams_0.5.yaml --device cuda --move_all_to_cuda false
