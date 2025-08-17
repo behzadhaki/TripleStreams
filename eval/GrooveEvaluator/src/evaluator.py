@@ -19,7 +19,11 @@ import copy
 import pandas as pd
 from scipy.io.wavfile import write
 
-from bokeh.models.widgets import Panel, Tabs
+try:
+    from bokeh.models.widgets import Panel, Tabs
+except ImportError:
+    from bokeh.models import TabPanel as Panel, Tabs
+
 from bokeh.io import save
 
 from eval.MultiSetEvaluator import MultiSetEvaluator

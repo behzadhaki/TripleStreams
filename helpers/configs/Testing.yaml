@@ -53,7 +53,7 @@ beta_level: 0.2
 # Step-based logging frequencies
 step_log_frequency: 2                        # Log every 50 steps
 step_hit_score_frequency: 8                # Hit scores every 2000 steps
-step_piano_roll_frequency: 1               # Piano rolls every 1500 steps
+step_piano_roll_frequency_epoch_pct: 25.0                # Piano rolls every 25% = every 0.25 epochs
 
 # Evaluation settings
 calculate_hit_scores_on_train: true

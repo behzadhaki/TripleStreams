@@ -6,55 +6,13 @@ from eval.UMAP import UMapper
 import tqdm
 import time
 
-from model import BaseVAE, TripleStreamsVAE
+from model import FlexControlTripleStreamsVAE
 
 from logging import getLogger
 logger = getLogger("EvalUtils")
 logger.setLevel("DEBUG")
-from data import get_triplestream_dataset
+from data import get_flexcontrol_triplestream_dataset
 
-
-# def batch_data_extractor(data_, device):
-#     # Extract the data from the batch
-#     input_grooves = data_[0].to(device) if data_[0].device.type != device else data_[0]
-#     output_streams = data_[1].to(device) if data_[1].device.type != device else data_[1]
-#     encoding_control1_tokens = data_[2].to(device) if data_[2].device.type != device else data_[2]
-#     encoding_control2_tokens = data_[3].to(device) if data_[3].device.type != device else data_[3]
-#     decoding_control1_tokens = data_[4].to(device) if data_[4].device.type != device else data_[4]
-#     decoding_control2_tokens = data_[5].to(device) if data_[5].device.type != device else data_[5]
-#     decoding_control3_tokens = data_[6].to(device) if data_[6].device.type != device else data_[6]
-#     indices = data_[7]
-#
-#     return (input_grooves,
-#             output_streams,
-#             encoding_control1_tokens,
-#             encoding_control2_tokens,
-#             decoding_control1_tokens,
-#             decoding_control2_tokens,
-#             decoding_control3_tokens,
-#             indices)
-#
-#
-# def predict_using_batch_data(batch_data, model_=model_on_device, device):
-#     (input_grooves,
-#      output_streams,
-#      encoding_control1_tokens,
-#      encoding_control2_tokens,
-#      decoding_control1_tokens,
-#      decoding_control2_tokens,
-#      decoding_control3_tokens,
-#      indices) = batch_data_extractor(batch_data, device)
-#
-#     with torch.no_grad():
-#         hvo, latent_z = model_.predict(
-#             flat_hvo_groove=input_grooves,
-#             encoding_control1_token=encoding_control1_tokens,
-#             encoding_control2_token=encoding_control2_tokens,
-#             decoding_control1_token=decoding_control1_tokens,
-#             decoding_control2_token=decoding_control2_tokens,
-#             decoding_control3_token=decoding_control3_tokens)
-#
-#     return hvo, latent_z
 
 def generate_umap_for_wandb(
         config,
@@ -66,13 +24,12 @@ def generate_umap_for_wandb(
         previous_loaded_dataset=None,
 ):
     """
-    Generate the umap for the given model and dataset setting.
+    Generate the umap for the given FlexControl model and dataset setting.
 
     Args:
-        :param config: config dictionary similiar to training config
+        :param config: config dictionary similar to training config
         :param subset_tag: subset tag to use ('train'/'test'/'validation')
-        :param use_cached: at the end of first call (usually epoch 0), will decide whether to use different samples or
-                           allow reusing one that was cached in a previous run
+        :param use_cached: whether to use cached dataset
         :param downsampled_size: Number of random samples to use for umap generation
         :param tag_key: coloring data based on this key (use metadata key or 'collection' here)
         :param previous_loaded_dataset: dataset loaded in a prior epoch
@@ -84,7 +41,7 @@ def generate_umap_for_wandb(
     start = time.time()
 
     if previous_loaded_dataset is None:
-        test_dataset = get_triplestream_dataset(
+        test_dataset = get_flexcontrol_triplestream_dataset(
             config=config,
             subset_tag=subset_tag,
             use_cached=use_cached,
@@ -111,7 +68,7 @@ def generate_umap_for_wandb(
     latents_z = None
     for batch_ix, batch_data in tqdm.tqdm(enumerate(dataloader), total=len(dataloader), desc="Generating UMAP"):
         _, z = predict_using_batch_data_method(batch_data=batch_data)
-        tags_used.extend(batch_data[-1]['collection'])
+        tags_used.extend(batch_data[-2]['collection'])
 
         if latents_z is None:
             latents_z = z.detach().cpu().numpy()
@@ -123,14 +80,10 @@ def generate_umap_for_wandb(
         umapper.fit(latents_z, tags_=tags_used)
         p = umapper.plot(show_plot=False, prepare_for_wandb=True)
         end = time.time()
-        # logger.info(f"UMAP Generation for {subset_tag} took {end - start} seconds")
         return {f"{subset_tag}_umap": p}, test_dataset
 
     except Exception as e:
-        # logger.info(f"UMAP failed for subset: {subset_tag}".format(subset_tag))
         return None, test_dataset
-
-
 
 
 def get_pianoroll_for_wandb(
@@ -146,14 +99,14 @@ def get_pianoroll_for_wandb(
         previous_evaluator=None,
         **kwargs):
     """
-    Prepare the media for logging in wandb. Can be easily used with an evaluator template
+    Prepare the media for logging in wandb for FlexControl model. Can be easily used with an evaluator template
     (A template can be created using the code in eval/GrooveEvaluator/templates/main.py)
-    :param predict_using_batch_data: The function to be used for prediction
-    :param dataset_setting_json_path: The path to the dataset setting json file
+    :param predict_using_batch_data_method: The function to be used for prediction
+    :param config: The configuration object/dict
     :param subset_tag: The name of the subset to be evaluated
-    :param down_sampled_ratio: The ratio of the subset to be evaluated
+    :param downsampled_size: Number of samples to evaluate
     :param cached_folder: The folder to be used for caching the evaluator template
-    :param divide_by_genre: Whether to divide the subset by genre or not
+    :param divide_by_collection: Whether to divide the subset by collection or not
     :param previous_evaluator: The previous evaluator to be used for logging (this optimizes the loading/creating of the evaluator). In the second epoch, pass the returned evaluator from the first epoch.
     :param kwargs:                  additional arguments: need_hit_scores, need_velocity_distributions,
                                     need_offset_distributions, need_rhythmic_distances, need_heatmap
@@ -228,9 +181,6 @@ def get_hit_scores(
         divide_by_collection=True,   # use collection instead
         previous_evaluator=None):
 
-    # # logger.info("Generating the hit scores for subset: {}".format(subset_tag))
-    # and model is correct type
-
     start = time.time()
 
     if previous_evaluator is not None:
@@ -243,7 +193,7 @@ def get_hit_scores(
             downsampled_size=downsampled_size,
             use_cached=use_cached,
             divide_by_collection=divide_by_collection,
-            use_input_in_hvo_sequences=False                    # <------ Must be False here: True will result in higher values when set to false (because we dont predict groove, just predicting streams)
+            use_input_in_hvo_sequences=False  # <------ Must be False here: True will result in higher values when set to false (because we dont predict groove, just predicting streams)
         )
 
     # (1) Get the targets, (2) tapify and pass to the model (3) add the predictions to the evaluator
@@ -269,10 +219,6 @@ def get_hit_scores(
     score_dict = {f"Hit_Scores/{key}_mean_{subset_tag}".replace(" ", "_").replace("-", "_"): float(value['mean']) for key, value
                   in sorted(hit_dict.items())}
 
-    # score_dict.update({f"Hit_Scores/{key}_std_{subset_tag}".replace(" ", "_").replace("-", "_"): float(value['std']) for key, value
-    #               in sorted(hit_dict.items())})
-
     end = time.time()
     logger.info(f"Hit Scores Generation for {subset_tag} took {end - start} seconds")
     return score_dict, evaluator
-

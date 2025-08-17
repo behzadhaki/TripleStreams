@@ -1,10 +1,10 @@
 import os
 import wandb
 import torch
-from model import TripleStreamsVAE
+from model import FlexControlTripleStreamsVAE
 from helpers import train_utils
-from helpers import eval_utils_TripleStreams as eval_utils
-from data.src.dataLoaders import get_triplestream_dataset
+from helpers import eval_utils
+from data.src.dataLoaders import get_flexcontrol_triplestream_dataset
 from torch.utils.data import DataLoader
 from logging import getLogger, DEBUG
 import yaml
@@ -24,7 +24,7 @@ parser.add_argument("--wandb", type=bool, help="log to wandb", default=True)
 parser.add_argument("--config",
                     help="Yaml file for configuration. If available, the rest of the arguments will be ignored",
                     default=None)
-parser.add_argument("--wandb_project", type=str, help="WANDB Project Name", default="TripleStreamsVAE")
+parser.add_argument("--wandb_project", type=str, help="WANDB Project Name", default="FlexControlTripleStreamsVAE")
 
 # ----------------------- Checkpoint Resume Parameters -----------------------
 parser.add_argument("--resume_from_checkpoint", type=bool, help="Resume training from checkpoint", default=False)
@@ -49,23 +49,24 @@ parser.add_argument("--num_decoder_layers", type=int, help="Number of decoder la
 parser.add_argument("--max_len", type=int, help="Maximum sequence length", default=32)
 parser.add_argument("--latent_dim", type=int, help="Overall Dimension of the latent space", default=128)
 
-# ---------------------- Control Parameters -----------------------
-parser.add_argument("--prepend_control_tokens", type=bool, help="Prepend controls rather than summing", default=True)
-parser.add_argument("--encoding_control1_key", type=str, help="control 1 applied to encoder",
-                    default="Flat Out Vs. Input | Hits | Hamming")
-parser.add_argument("--encoding_control2_key", type=str, help="control 2 applied to encoder",
-                    default="Flat Out Vs. Input | Accent | Hamming")
-parser.add_argument("--decoding_control1_key", type=str, help="control 1 applied to decoder",
-                    default="Stream 1 Vs. Flat Out | Hits | Hamming")
-parser.add_argument("--decoding_control2_key", type=str, help="control 2 applied to decoder",
-                    default="Stream 2 Vs. Flat Out | Hits | Hamming")
-parser.add_argument("--decoding_control3_key", type=str, help="control 3 applied to decoder",
-                    default="Stream 3 Vs. Flat Out | Hits | Hamming")
-parser.add_argument("--n_encoding_control1_tokens", type=int, help="Number of tokens", default=33)
-parser.add_argument("--n_encoding_control2_tokens", type=int, help="Number of tokens", default=10)
-parser.add_argument("--n_decoding_control1_tokens", type=int, help="Number of tokens", default=10)
-parser.add_argument("--n_decoding_control2_tokens", type=int, help="Number of tokens", default=10)
-parser.add_argument("--n_decoding_control3_tokens", type=int, help="Number of tokens", default=10)
+# ---------------------- Flexible Control Parameters -----------------------
+parser.add_argument("--n_encoding_control_tokens", nargs='+', type=int,
+                    help="Number of tokens for each encoding control",
+                    default=[33, 10])
+parser.add_argument("--encoding_control_modes", nargs='+', type=str,
+                    help="Mode for each encoding control ('prepend' or 'add')",
+                    default=['prepend', 'add'])
+parser.add_argument("--encoding_control_keys", nargs='+', type=str, help="Keys for encoding controls",
+                    default=["Flat Out Vs. Input | Hits | Hamming", "Flat Out Vs. Input | Accent | Hamming"])
+parser.add_argument("--n_decoding_control_tokens", nargs='+', type=int,
+                    help="Number of tokens for each decoding control",
+                    default=[10, 10, 10])
+parser.add_argument("--decoding_control_modes", nargs='+', type=str,
+                    help="Mode for each decoding control ('prepend' or 'add')",
+                    default=['prepend', 'prepend', 'prepend'])
+parser.add_argument("--decoding_control_keys", nargs='+', type=str, help="Keys for decoding controls",
+                    default=["Stream 1 Vs. Flat Out | Hits | Hamming", "Stream 2 Vs. Flat Out | Hits | Hamming",
+                             "Stream 3 Vs. Flat Out | Hits | Hamming"])
 
 # ----------------------- Epoch-Percentage-Based Beta Annealing Parameters -----------------------
 parser.add_argument("--beta_annealing_period_epoch_pct", type=float, default=100.0,
@@ -130,7 +131,8 @@ parser.add_argument("--piano_roll_samples", type=bool, help="Generate piano roll
 
 # ----------------------- Model Saving Params -----------------------
 parser.add_argument("--save_model", type=bool, help="Save model", default=True)
-parser.add_argument("--save_model_dir", type=str, help="Path to save the model", default="misc/TripleStreamsVAE")
+parser.add_argument("--save_model_dir", type=str, help="Path to save the model",
+                    default="misc/FlexControlTripleStreamsVAE")
 
 args, unknown = parser.parse_known_args()
 if unknown:
@@ -225,12 +227,125 @@ def create_dataloader_with_conditional_shuffle(dataset, batch_size, current_step
     return DataLoader(dataset, batch_size=batch_size, shuffle=should_shuffle)
 
 
+def validate_control_configuration(config):
+    """Validate that control configuration is consistent"""
+    # Check that lists have matching lengths
+    assert len(config['n_encoding_control_tokens']) == len(config['encoding_control_modes']), \
+        "Number of encoding control tokens must match number of encoding control modes"
+    assert len(config['n_encoding_control_tokens']) == len(config['encoding_control_keys']), \
+        "Number of encoding control tokens must match number of encoding control keys"
+
+    assert len(config['n_decoding_control_tokens']) == len(config['decoding_control_modes']), \
+        "Number of decoding control tokens must match number of decoding control modes"
+    assert len(config['n_decoding_control_tokens']) == len(config['decoding_control_keys']), \
+        "Number of decoding control tokens must match number of decoding control keys"
+
+    # Check that modes are valid
+    valid_modes = ['prepend', 'add']
+    for mode in config['encoding_control_modes']:
+        assert mode in valid_modes, f"Invalid encoding control mode: {mode}. Must be one of {valid_modes}"
+    for mode in config['decoding_control_modes']:
+        assert mode in valid_modes, f"Invalid decoding control mode: {mode}. Must be one of {valid_modes}"
+
+    print(f"\n{'=' * 60}")
+    print(f"FLEXIBLE CONTROL CONFIGURATION")
+    print(f"{'=' * 60}")
+    print(f"Encoding Controls ({len(config['n_encoding_control_tokens'])} total):")
+    for i, (n_tokens, mode, key) in enumerate(zip(config['n_encoding_control_tokens'],
+                                                  config['encoding_control_modes'],
+                                                  config['encoding_control_keys'])):
+        print(f"  {i}: {n_tokens} tokens, {mode} mode, key: {key}")
+
+    print(f"\nDecoding Controls ({len(config['n_decoding_control_tokens'])} total):")
+    for i, (n_tokens, mode, key) in enumerate(zip(config['n_decoding_control_tokens'],
+                                                  config['decoding_control_modes'],
+                                                  config['decoding_control_keys'])):
+        print(f"  {i}: {n_tokens} tokens, {mode} mode, key: {key}")
+    print(f"{'=' * 60}\n")
+
+
+def convert_legacy_config_to_flexcontrol(legacy_config):
+    """
+    Convert a legacy TripleStreamsVAE config to FlexControlTripleStreamsVAE format
+
+    Args:
+        legacy_config: Old configuration dict
+
+    Returns:
+        dict: Converted configuration
+    """
+
+    flexible_config = legacy_config.copy()
+
+    # Extract legacy control configuration
+    prepend_mode = legacy_config.get('prepend_control_tokens', False)
+
+    # Convert control token counts
+    flexible_config['n_encoding_control_tokens'] = [
+        legacy_config.get('n_encoding_control1_tokens', 33),
+        legacy_config.get('n_encoding_control2_tokens', 10)
+    ]
+
+    flexible_config['n_decoding_control_tokens'] = [
+        legacy_config.get('n_decoding_control1_tokens', 10),
+        legacy_config.get('n_decoding_control2_tokens', 10),
+        legacy_config.get('n_decoding_control3_tokens', 10)
+    ]
+
+    # Set control modes based on legacy prepend_control_tokens setting
+    if prepend_mode:
+        flexible_config['encoding_control_modes'] = ['prepend', 'add']
+        flexible_config['decoding_control_modes'] = ['prepend', 'prepend', 'prepend']
+    else:
+        flexible_config['encoding_control_modes'] = ['add', 'add']
+        flexible_config['decoding_control_modes'] = ['add', 'add', 'add']
+
+    # Set control keys
+    flexible_config['encoding_control_keys'] = [
+        legacy_config.get('encoding_control1_key', "Flat Out Vs. Input | Hits | Hamming"),
+        legacy_config.get('encoding_control2_key', "Flat Out Vs. Input | Accent | Hamming")
+    ]
+
+    flexible_config['decoding_control_keys'] = [
+        legacy_config.get('decoding_control1_key', "Stream 1 Vs. Flat Out | Hits | Hamming"),
+        legacy_config.get('decoding_control2_key', "Stream 2 Vs. Flat Out | Hits | Hamming"),
+        legacy_config.get('decoding_control3_key', "Stream 3 Vs. Flat Out | Hits | Hamming")
+    ]
+
+    # Remove legacy parameters to avoid confusion
+    legacy_params_to_remove = [
+        'prepend_control_tokens',
+        'n_encoding_control1_tokens', 'n_encoding_control2_tokens',
+        'n_decoding_control1_tokens', 'n_decoding_control2_tokens', 'n_decoding_control3_tokens',
+        'encoding_control1_key', 'encoding_control2_key',
+        'decoding_control1_key', 'decoding_control2_key', 'decoding_control3_key'
+    ]
+
+    for param in legacy_params_to_remove:
+        flexible_config.pop(param, None)
+
+    print(f"🔄 Legacy configuration converted:")
+    print(
+        f"  prepend_control_tokens: {prepend_mode} → encoding_modes: {flexible_config['encoding_control_modes']}, decoding_modes: {flexible_config['decoding_control_modes']}")
+    print(
+        f"  Control tokens: enc={flexible_config['n_encoding_control_tokens']}, dec={flexible_config['n_decoding_control_tokens']}")
+
+    return flexible_config
+
+
 # Load configuration
 loaded_via_config = False
 if args.config is not None:
     print(f"\n\n!!!Loading configuration from {args.config}!!!\n\n")
     with open(args.config, "r") as f:
         hparams = yaml.safe_load(f)
+
+        # Check if this is a legacy config and convert if needed
+        if "prepend_control_tokens" in hparams or "n_encoding_control1_tokens" in hparams:
+            print("🔄 Detected legacy configuration format. Converting to FlexControl format...")
+            hparams = convert_legacy_config_to_flexcontrol(hparams)
+            print("✅ Successfully converted legacy configuration")
+
         if "wandb_project" not in hparams.keys():
             hparams["wandb_project"] = args.wandb_project
         if "device" in hparams.keys():
@@ -255,18 +370,13 @@ else:
         max_len_enc=args.max_len,
         max_len_dec=args.max_len,
 
-        # Control tokens
-        prepend_control_tokens=args.prepend_control_tokens,
-        encoding_control1_key=args.encoding_control1_key,
-        encoding_control2_key=args.encoding_control2_key,
-        decoding_control1_key=args.decoding_control1_key,
-        decoding_control2_key=args.decoding_control2_key,
-        decoding_control3_key=args.decoding_control3_key,
-        n_encoding_control1_tokens=args.n_encoding_control1_tokens,
-        n_encoding_control2_tokens=args.n_encoding_control2_tokens,
-        n_decoding_control1_tokens=args.n_decoding_control1_tokens,
-        n_decoding_control2_tokens=args.n_decoding_control2_tokens,
-        n_decoding_control3_tokens=args.n_decoding_control3_tokens,
+        # Flexible control tokens
+        n_encoding_control_tokens=args.n_encoding_control_tokens,
+        encoding_control_modes=args.encoding_control_modes,
+        encoding_control_keys=args.encoding_control_keys,
+        n_decoding_control_tokens=args.n_decoding_control_tokens,
+        decoding_control_modes=args.decoding_control_modes,
+        decoding_control_keys=args.decoding_control_keys,
         velocity_dropout=args.velocity_dropout,
         offset_dropout=args.offset_dropout,
 
@@ -324,6 +434,9 @@ if args.device == 'cuda' and not torch.cuda.is_available():
 
 is_testing = hparams.get("is_testing", False) or args.is_testing
 
+# Validate control configuration
+validate_control_configuration(hparams)
+
 # Print configuration
 print("\n\n|" + "=" * 80 + "|")
 print(f"\n\tHyperparameters for the run:")
@@ -344,13 +457,13 @@ if __name__ == "__main__":
         config=hparams,
         project=hparams["wandb_project"],
         entity="behzadhaki",
-        settings=wandb.Settings(code_dir="train_TripleStreamsVAE.py")
+        settings=wandb.Settings(code_dir="train_FlexControlTripleStreamsVAE.py")
     )
 
     if loaded_via_config:
         model_code = wandb.Artifact("train_code_and_config", type="train_code_and_config")
         model_code.add_file(args.config)
-        model_code.add_file("train_TripleStreamsVAE.py")
+        model_code.add_file("train_FlexControlTripleStreamsVAE.py")
         wandb.run.log_artifact(model_code)
 
     config = wandb.config
@@ -358,7 +471,7 @@ if __name__ == "__main__":
     run_id = wandb_run.id
 
     # Initialize the model
-    model_cpu = TripleStreamsVAE(config)
+    model_cpu = FlexControlTripleStreamsVAE(config)
     model_on_device = model_cpu.to(config.device)
 
     # Instantiate loss functions and optimizer
@@ -372,7 +485,7 @@ if __name__ == "__main__":
         optimizer = torch.optim.SGD(model_on_device.parameters(), lr=config.lr)
 
     # Load Training and Testing Datasets
-    training_dataset = get_triplestream_dataset(
+    training_dataset = get_flexcontrol_triplestream_dataset(
         config=config,
         subset_tag="train",
         use_cached=True,
@@ -381,7 +494,7 @@ if __name__ == "__main__":
         print_logs=True
     )
 
-    test_dataset = get_triplestream_dataset(
+    test_dataset = get_flexcontrol_triplestream_dataset(
         config=config,
         subset_tag="test",
         use_cached=True,
@@ -415,7 +528,7 @@ if __name__ == "__main__":
 
     # Setup resumable training
     print("\n\n|Setting up resumable training if needed|\n\n")
-    starting_step, model_on_device, optimizer, beta_scheduler = train_utils.setup_resumable_training(
+    starting_step, model_on_device, optimizer, beta_scheduler = train_utils.setup_resumable_training_flexcontrol(
         config, model_on_device, optimizer, beta_scheduler, wandb_run
     )
 
@@ -424,47 +537,36 @@ if __name__ == "__main__":
     def batch_data_extractor(data_, device=config.device):
         input_grooves = data_[0].to(device) if data_[0].device.type != device else data_[0]
         output_streams = data_[1].to(device) if data_[1].device.type != device else data_[1]
-        encoding_control1_tokens = data_[2].to(device) if data_[2].device.type != device else data_[2]
-        encoding_control2_tokens = data_[3].to(device) if data_[3].device.type != device else data_[3]
-        decoding_control1_tokens = data_[4].to(device) if data_[4].device.type != device else data_[4]
-        decoding_control2_tokens = data_[5].to(device) if data_[5].device.type != device else data_[5]
-        decoding_control3_tokens = data_[6].to(device) if data_[6].device.type != device else data_[6]
-        metadata = data_[7]
-        indices = data_[8]
+        encoding_control_tokens = data_[2].to(device) if data_[2].device.type != device else data_[2]
+        decoding_control_tokens = data_[3].to(device) if data_[3].device.type != device else data_[3]
+        metadata = data_[4]
+        indices = data_[5]
 
-        return (input_grooves, output_streams, encoding_control1_tokens, encoding_control2_tokens,
-                decoding_control1_tokens, decoding_control2_tokens, decoding_control3_tokens, metadata, indices)
+        return (input_grooves, output_streams, encoding_control_tokens, decoding_control_tokens,
+                metadata, indices)
 
 
     def predict_using_batch_data(batch_data, model_=model_on_device, device=config.device):
-        (input_grooves, output_streams, encoding_control1_tokens, encoding_control2_tokens,
-         decoding_control1_tokens, decoding_control2_tokens, decoding_control3_tokens, metadata,
-         indices) = batch_data_extractor(batch_data, device)
+        (input_grooves, output_streams, encoding_control_tokens, decoding_control_tokens,
+         metadata, indices) = batch_data_extractor(batch_data, device)
 
         with torch.no_grad():
             hvo, latent_z = model_.predict(
                 flat_hvo_groove=input_grooves,
-                encoding_control1_token=encoding_control1_tokens,
-                encoding_control2_token=encoding_control2_tokens,
-                decoding_control1_token=decoding_control1_tokens,
-                decoding_control2_token=decoding_control2_tokens,
-                decoding_control3_token=decoding_control3_tokens)
+                encoding_control_tokens=encoding_control_tokens,
+                decoding_control_tokens=decoding_control_tokens)
 
         return hvo, latent_z
 
 
     def forward_using_batch_data(batch_data, model_=model_on_device, device=config.device):
-        (input_grooves, target_output_streams, encoding_control1_tokens, encoding_control2_tokens,
-         decoding_control1_tokens, decoding_control2_tokens, decoding_control3_tokens, metadata,
-         indices) = batch_data_extractor(batch_data, device)
+        (input_grooves, target_output_streams, encoding_control_tokens, decoding_control_tokens,
+         metadata, indices) = batch_data_extractor(batch_data, device)
 
         h_logits, v_logits, o_logits, mu, log_var, latent_z = model_.forward(
             flat_hvo_groove=input_grooves,
-            encoding_control1_token=encoding_control1_tokens,
-            encoding_control2_token=encoding_control2_tokens,
-            decoding_control1_token=decoding_control1_tokens,
-            decoding_control2_token=decoding_control2_tokens,
-            decoding_control3_token=decoding_control3_tokens)
+            encoding_control_tokens=encoding_control_tokens,
+            decoding_control_tokens=decoding_control_tokens)
 
         return h_logits, v_logits, o_logits, mu, log_var, latent_z, target_output_streams
 

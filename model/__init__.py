@@ -3,6 +3,7 @@ from model.BaseVAE.model import BaseVAE
 
 # TripleStreamVAE Imports
 from model.TripleStreamsVAE.model import TripleStreamsVAE
+from model.FlexControlTripleStreamsVAE.model import FlexControlTripleStreamsVAE
 
 
 

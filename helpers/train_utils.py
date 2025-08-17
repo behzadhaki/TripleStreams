@@ -706,3 +706,368 @@ def test_loop_step_based(test_dataloader, forward_method, hit_loss_fn, velocity_
         is_training=False,
         wandb_log=False  # No step-by-step logging during test
     )
+
+
+# Add these functions to your existing train_utils.py
+
+def validate_flexcontrol_architecture_compatibility(old_config, new_config):
+    """
+    Validate that the new FlexControl config is compatible with the old model architecture
+    Includes special handling for legacy -> flexible control migration
+
+    Args:
+        old_config: Configuration from the checkpoint (dict or wandb.Config)
+        new_config: New configuration (dict or wandb.Config)
+
+    Returns:
+        tuple: (bool: is_compatible, bool: is_legacy_conversion)
+    """
+    # Define architecture-critical parameters
+    core_architecture_params = [
+        'd_model_enc', 'd_model_dec', 'embedding_size_src', 'embedding_size_tgt',
+        'nhead_enc', 'nhead_dec', 'dim_feedforward_enc', 'dim_feedforward_dec',
+        'num_encoder_layers', 'num_decoder_layers', 'latent_dim', 'max_len'
+    ]
+
+    # Check if this is a legacy checkpoint (uses old control format)
+    is_legacy_checkpoint = False
+    legacy_control_params = [
+        'n_encoding_control1_tokens', 'n_encoding_control2_tokens',
+        'n_decoding_control1_tokens', 'n_decoding_control2_tokens', 'n_decoding_control3_tokens'
+    ]
+
+    flexible_control_params = [
+        'n_encoding_control_tokens', 'encoding_control_modes',
+        'n_decoding_control_tokens', 'decoding_control_modes'
+    ]
+
+    # Check if we're dealing with legacy->flexible conversion
+    old_has_legacy = any(old_config.get(param) is not None for param in legacy_control_params)
+    new_has_flexible = any(new_config.get(param) is not None for param in flexible_control_params)
+
+    if old_has_legacy and new_has_flexible:
+        is_legacy_checkpoint = True
+        logger.info("🔄 Detected legacy -> flexible control conversion")
+
+        # Validate legacy->flexible control compatibility
+        try:
+            # Map legacy controls to expected flexible format
+            legacy_encoding_controls = [
+                old_config.get('n_encoding_control1_tokens', 0),
+                old_config.get('n_encoding_control2_tokens', 0)
+            ]
+            legacy_decoding_controls = [
+                old_config.get('n_decoding_control1_tokens', 0),
+                old_config.get('n_decoding_control2_tokens', 0),
+                old_config.get('n_decoding_control3_tokens', 0)
+            ]
+
+            new_encoding_controls = new_config.get('n_encoding_control_tokens', [])
+            new_decoding_controls = new_config.get('n_decoding_control_tokens', [])
+
+            if len(new_encoding_controls) != 2:
+                raise ValueError(
+                    f"Expected 2 encoding controls for legacy conversion, got {len(new_encoding_controls)}")
+            if len(new_decoding_controls) != 3:
+                raise ValueError(
+                    f"Expected 3 decoding controls for legacy conversion, got {len(new_decoding_controls)}")
+
+            # Check that token counts match
+            if legacy_encoding_controls != new_encoding_controls:
+                raise ValueError(
+                    f"Encoding control token counts don't match: legacy={legacy_encoding_controls} vs new={new_encoding_controls}")
+            if legacy_decoding_controls != new_decoding_controls:
+                raise ValueError(
+                    f"Decoding control token counts don't match: legacy={legacy_decoding_controls} vs new={new_decoding_controls}")
+
+            # Check that modes are compatible with legacy behavior
+            old_prepend_mode = old_config.get('prepend_control_tokens', False)
+            expected_encoding_modes = ['prepend', 'add'] if old_prepend_mode else ['add', 'add']
+            expected_decoding_modes = ['prepend', 'prepend', 'prepend'] if old_prepend_mode else ['add', 'add', 'add']
+
+            new_encoding_modes = new_config.get('encoding_control_modes', [])
+            new_decoding_modes = new_config.get('decoding_control_modes', [])
+
+            if new_encoding_modes != expected_encoding_modes:
+                logger.warning(
+                    f"Encoding modes may not match legacy behavior: expected={expected_encoding_modes}, got={new_encoding_modes}")
+            if new_decoding_modes != expected_decoding_modes:
+                logger.warning(
+                    f"Decoding modes may not match legacy behavior: expected={expected_decoding_modes}, got={new_decoding_modes}")
+
+        except Exception as e:
+            raise ValueError(f"Legacy->Flexible control conversion validation failed: {e}")
+
+    # Validate core architecture parameters
+    incompatible_params = []
+    for param in core_architecture_params:
+        old_val = old_config.get(param) if hasattr(old_config, 'get') else getattr(old_config, param, None)
+        new_val = new_config.get(param) if hasattr(new_config, 'get') else getattr(new_config, param, None)
+
+        # Handle max_len vs max_len_enc/max_len_dec compatibility
+        if param == 'max_len':
+            new_max_len_enc = new_config.get('max_len_enc') if hasattr(new_config, 'get') else getattr(new_config,
+                                                                                                       'max_len_enc',
+                                                                                                       None)
+            new_max_len_dec = new_config.get('max_len_dec') if hasattr(new_config, 'get') else getattr(new_config,
+                                                                                                       'max_len_dec',
+                                                                                                       None)
+            if old_val is not None and (new_max_len_enc is not None or new_max_len_dec is not None):
+                if new_max_len_enc != old_val or new_max_len_dec != old_val:
+                    incompatible_params.append(
+                        f"{param} (old: {old_val}, new_enc: {new_max_len_enc}, new_dec: {new_max_len_dec})")
+                continue
+
+        if old_val is not None and new_val is not None:
+            if old_val != new_val:
+                incompatible_params.append(param)
+                logger.error(f"  {param}: checkpoint={old_val} vs current={new_val}")
+
+    if incompatible_params:
+        raise ValueError(f"Core architecture incompatible! Different values for: {incompatible_params}")
+
+    logger.info("✅ Architecture compatibility validated successfully")
+    if is_legacy_checkpoint:
+        logger.info("✅ Legacy->Flexible control conversion validated")
+
+    return True, is_legacy_checkpoint
+
+
+def setup_resumable_training_flexcontrol(config, model, optimizer, beta_scheduler=None, wandb_run=None):
+    """
+    Setup training resumption from checkpoint with FlexControl compatibility
+    Handles both legacy TripleStreamsVAE and new FlexControlTripleStreamsVAE checkpoints
+
+    Args:
+        config: Current configuration (uses CLI args/config file, no inheritance)
+        model: FlexControlTripleStreamsVAE model instance
+        optimizer: Optimizer instance
+        beta_scheduler: Beta scheduler instance (optional)
+        wandb_run: Active wandb run instance (optional)
+
+    Returns:
+        starting_step, updated_model, updated_optimizer, updated_beta_scheduler
+    """
+    starting_step = 0
+
+    if getattr(config, 'resume_from_checkpoint', False):
+        if not getattr(config, 'checkpoint_artifact_name', None):
+            raise ValueError("Must specify checkpoint_artifact_name when resuming")
+
+        logger.info(f"🔄 Resuming from checkpoint: {config.checkpoint_artifact_name}")
+
+        # Load checkpoint using the new API
+        checkpoint_data, checkpoint_step = load_checkpoint_from_wandb(
+            config.wandb_project,
+            getattr(config, 'checkpoint_wandb_run_id', None),
+            config.checkpoint_artifact_name,
+            getattr(config, 'checkpoint_step', None),
+            wandb_run
+        )
+
+        # Get old configuration from WandB for architecture validation
+        if getattr(config, 'checkpoint_wandb_run_id', None):
+            import wandb
+            api = wandb.Api()
+            old_run = api.run(f"behzadhaki/{config.wandb_project}/{config.checkpoint_wandb_run_id}")
+            old_config = old_run.config
+
+            # Validate architecture compatibility with FlexControl support
+            is_compatible, is_legacy_conversion = validate_flexcontrol_architecture_compatibility(old_config, config)
+
+            if is_legacy_conversion:
+                logger.info("📋 This checkpoint contains a legacy TripleStreamsVAE model")
+                logger.info(
+                    "🔄 The FlexControlTripleStreamsVAE model will automatically convert the checkpoint parameters")
+            else:
+                logger.info("✅ Checkpoint is already in FlexControl format")
+
+        else:
+            logger.warning("⚠️  No checkpoint_wandb_run_id provided - skipping architecture validation")
+            is_legacy_conversion = False
+
+        # Load model state with automatic conversion support
+        if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
+            # Enhanced checkpoint format
+            try:
+                # The FlexControlTripleStreamsVAE.load_state_dict() method will handle legacy conversion
+                model.load_state_dict(checkpoint_data['model_state_dict'], strict=False)
+                if is_legacy_conversion:
+                    logger.info("🎉 Successfully loaded and converted legacy checkpoint parameters")
+                else:
+                    logger.info("✅ Loaded model state from FlexControl checkpoint")
+            except Exception as e:
+                logger.error(f"❌ Failed to load checkpoint: {e}")
+                raise
+
+            # Load optimizer state if available and not resetting
+            if 'optimizer_state_dict' in checkpoint_data and not getattr(config, 'reset_optimizer', False):
+                try:
+                    optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+                    logger.info("✅ Loaded optimizer state from checkpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️  Could not load optimizer state: {e}. Continuing with fresh optimizer.")
+            else:
+                logger.info("🔄 Optimizer state reset or not available")
+
+            # Load beta scheduler state if available and not resetting
+            if beta_scheduler is not None and 'beta_scheduler_state' in checkpoint_data and not getattr(config,
+                                                                                                        'reset_beta_scheduler',
+                                                                                                        False):
+                try:
+                    beta_scheduler.current_step = checkpoint_data['beta_scheduler_state'].get('current_step',
+                                                                                              checkpoint_step)
+                    if hasattr(beta_scheduler, 'kl_history'):
+                        beta_scheduler.kl_history = checkpoint_data['beta_scheduler_state'].get('kl_history', [])
+                    logger.info("✅ Loaded beta scheduler state from checkpoint")
+                except Exception as e:
+                    logger.warning(f"⚠️  Could not load beta scheduler state: {e}. Continuing with fresh scheduler.")
+            elif beta_scheduler is not None and getattr(config, 'reset_beta_scheduler', False):
+                logger.info("🔄 Beta scheduler state reset")
+
+        else:
+            # Legacy checkpoint format (just model state dict)
+            try:
+                # The FlexControlTripleStreamsVAE.load_state_dict() method will handle legacy conversion
+                model.load_state_dict(checkpoint_data, strict=False)
+                logger.info("🎉 Successfully loaded and converted legacy checkpoint format")
+            except Exception as e:
+                logger.error(f"❌ Failed to load legacy checkpoint: {e}")
+                raise
+
+        starting_step = checkpoint_step
+        logger.info(f"🚀 Resuming training from step {starting_step}")
+
+        # Log the resumption details
+        import wandb
+        resume_info = {
+            "resumed_from_artifact": config.checkpoint_artifact_name,
+            "resumed_from_step": starting_step,
+            "reset_optimizer": getattr(config, 'reset_optimizer', False),
+            "reset_beta_scheduler": getattr(config, 'reset_beta_scheduler', False),
+            "legacy_conversion": is_legacy_conversion
+        }
+        if getattr(config, 'checkpoint_wandb_run_id', None):
+            resume_info["resumed_from_run"] = config.checkpoint_wandb_run_id
+
+        wandb.log(resume_info)
+
+    else:
+        logger.info("🆕 Starting training from scratch")
+
+    return starting_step, model, optimizer, beta_scheduler
+
+
+def create_legacy_to_flexible_control_mapping():
+    """
+    Create a mapping configuration that converts legacy TripleStreamsVAE to FlexControlTripleStreamsVAE
+    This is useful for programmatically creating compatible configs from legacy checkpoints
+    """
+
+    def convert_legacy_config_to_flexible(legacy_config,
+                                          encoding_control_keys=None,
+                                          decoding_control_keys=None):
+        """
+        Convert a legacy TripleStreamsVAE config to FlexControlTripleStreamsVAE format
+
+        Args:
+            legacy_config: Old configuration dict/object
+            encoding_control_keys: List of keys for encoding controls (if None, uses defaults)
+            decoding_control_keys: List of keys for decoding controls (if None, uses defaults)
+        """
+
+        # Default control keys (you can customize these based on your dataset)
+        if encoding_control_keys is None:
+            encoding_control_keys = [
+                "Flat Out Vs. Input | Hits | Hamming",
+                "Flat Out Vs. Input | Accent | Hamming"
+            ]
+
+        if decoding_control_keys is None:
+            decoding_control_keys = [
+                "Stream 1 Vs. Flat Out | Hits | Hamming",
+                "Stream 2 Vs. Flat Out | Hits | Hamming",
+                "Stream 3 Vs. Flat Out | Hits | Hamming"
+            ]
+
+        # Extract legacy control configuration
+        prepend_mode = legacy_config.get('prepend_control_tokens', False)
+
+        # Create flexible control configuration
+        flexible_config = {}
+
+        # Copy all existing parameters
+        for key, value in legacy_config.items():
+            if not key.startswith(('n_encoding_control', 'n_decoding_control', 'prepend_control_tokens')):
+                flexible_config[key] = value
+
+        # Convert control token counts
+        flexible_config['n_encoding_control_tokens'] = [
+            legacy_config.get('n_encoding_control1_tokens', 33),
+            legacy_config.get('n_encoding_control2_tokens', 10)
+        ]
+
+        flexible_config['n_decoding_control_tokens'] = [
+            legacy_config.get('n_decoding_control1_tokens', 10),
+            legacy_config.get('n_decoding_control2_tokens', 10),
+            legacy_config.get('n_decoding_control3_tokens', 10)
+        ]
+
+        # Set control modes based on legacy prepend_control_tokens setting
+        if prepend_mode:
+            flexible_config['encoding_control_modes'] = ['prepend', 'add']
+            flexible_config['decoding_control_modes'] = ['prepend', 'prepend', 'prepend']
+        else:
+            flexible_config['encoding_control_modes'] = ['add', 'add']
+            flexible_config['decoding_control_modes'] = ['add', 'add', 'add']
+
+        # Set control keys
+        flexible_config['encoding_control_keys'] = encoding_control_keys
+        flexible_config['decoding_control_keys'] = decoding_control_keys
+
+        return flexible_config
+
+    return convert_legacy_config_to_flexible
+
+
+# Example usage function
+def demonstrate_legacy_conversion():
+    """
+    Demonstrate how to convert a legacy config to flexible format
+    """
+    # Example legacy config
+    legacy_config = {
+        'd_model_enc': 128,
+        'd_model_dec': 128,
+        'embedding_size_src': 3,
+        'embedding_size_tgt': 9,
+        'nhead_enc': 4,
+        'nhead_dec': 8,
+        'dim_feedforward_enc': 128,
+        'dim_feedforward_dec': 512,
+        'num_encoder_layers': 3,
+        'num_decoder_layers': 6,
+        'dropout': 0.1,
+        'latent_dim': 16,
+        'max_len': 32,
+        'velocity_dropout': 0.1,
+        'offset_dropout': 0.2,
+        'n_encoding_control1_tokens': 20,
+        'n_encoding_control2_tokens': 10,
+        'n_decoding_control1_tokens': 20,
+        'n_decoding_control2_tokens': 10,
+        'n_decoding_control3_tokens': 10,
+        'prepend_control_tokens': True,
+        'device': 'cpu'
+    }
+
+    converter = create_legacy_to_flexible_control_mapping()
+    flexible_config = converter(legacy_config)
+
+    print("Legacy config converted to flexible format:")
+    print(
+        f"Encoding controls: {flexible_config['n_encoding_control_tokens']} with modes {flexible_config['encoding_control_modes']}")
+    print(
+        f"Decoding controls: {flexible_config['n_decoding_control_tokens']} with modes {flexible_config['decoding_control_modes']}")
+
+    return flexible_config

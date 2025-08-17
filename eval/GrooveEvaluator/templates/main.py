@@ -1,6 +1,6 @@
 from eval.GrooveEvaluator import Evaluator
 import os
-from data import get_triplestream_dataset
+from data import get_triplestream_dataset, get_flexcontrol_triplestream_dataset
 import logging
 import numpy as np
 from hvo_sequence.hvo_seq import HVO_Sequence
@@ -157,7 +157,7 @@ def create_triple_streams_template(dataset, identifier,
         if dataset is None:
             styles = ["Unknown"]
         else:
-            collections = [d[7]['collection'] for d in dataset]
+            collections = [d[-2]['collection'] for d in dataset]
             styles = sorted(list(set(collections).union()))
 
         for style in styles:
@@ -172,7 +172,7 @@ def create_triple_streams_template(dataset, identifier,
 
     hvo_sequences = compile_into_list_of_hvo_seqs(
         output_hvos=[d[1] for d in dataset],
-        metadatas=[d[7] for d in dataset],
+        metadatas=[d[-2] for d in dataset],
         input_hvos=[d[0] for d in dataset] if use_input_in_hvo_sequences else None)
     # create the evaluator
     eval = Evaluator(
@@ -221,7 +221,7 @@ def load_triple_streams_evaluator_template(
     :return:                        The evaluator template.
     """
 
-    test_dataset = get_triplestream_dataset(
+    test_dataset = get_flexcontrol_triplestream_dataset(
         config=config,
         subset_tag=subset_tag,
         use_cached=use_cached,

@@ -2,4 +2,4 @@ from data.src.utils import load_original_gmd_dataset_pickle
 from data.src.utils import extract_hvo_sequences_dict
 from data.src.utils import pickle_hvo_dict
 from data.src.utils import get_drum_mapping_using_label
-from data.src.dataLoaders import get_triplestream_dataset, Groove2TripleStream2BarDataset
+from data.src.dataLoaders import get_triplestream_dataset, Groove2TripleStream2BarDataset, get_flexcontrol_triplestream_dataset, FlexControlGroove2TripleStream2BarDataset
