@@ -663,6 +663,407 @@ def get_triplestream_dataset(
         print_logs=print_logs
     )
 
+
+class FlexControlGroove2TripleStream2BarDataset(Dataset):
+    """
+    Dataset class for FlexControlTripleStreamsVAE that supports flexible control token configurations.
+    """
+
+    def __init__(self,
+                 config,
+                 subset_tag,  # pass "train" or "validation" or "test"
+                 use_cached=True,
+                 downsampled_size=None,
+                 force_regenerate=False,
+                 move_all_to_cuda=False,
+                 print_logs=False):
+
+        self.dataset_root_path = config["dataset_root_path"]
+        self.dataset_files = config["dataset_files"]
+        self.subset_tag = subset_tag
+        self.max_len = config["max_len"]
+
+        # Flexible control configuration
+        self.n_encoding_control_tokens = config["n_encoding_control_tokens"]
+        self.encoding_control_keys = config["encoding_control_keys"]
+        self.n_decoding_control_tokens = config["n_decoding_control_tokens"]
+        self.decoding_control_keys = config["decoding_control_keys"]
+
+        def get_source_compiled_data_dictionary_path():
+            return os.path.join(self.dataset_root_path, self.subset_tag)
+
+        def get_cached_filepath():
+            dir_ = os.path.join("cached/TorchDatasets/", self.dataset_root_path.replace("/", "-"), self.subset_tag)
+            os.makedirs(dir_, exist_ok=True)
+            filename = "".join([df.split("_")[0] for df in self.dataset_files])
+
+            # Create hash for control configuration to ensure cache consistency
+            control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
+            control_hash = hashlib.md5(control_config_str.encode()).hexdigest()[:8]
+
+            filename += f"_flexcontrol_{self.max_len}_{downsampled_size}_{control_hash}"
+            filename = filename.replace(" ", "_").replace("|", "_").replace("/", "_").replace("\\", "_").replace("__",
+                                                                                                                 "_").replace(
+                "__", "_")
+
+            filename = filename + ".bz2pickle"
+            if not os.path.exists(dir_):
+                os.makedirs(dir_)
+            return os.path.join(dir_, filename)
+
+        # check if cached version exists
+        # ------------------------------------------------------------------------------------------
+        process_data = True
+
+        if use_cached and not force_regenerate:
+            if os.path.exists(get_cached_filepath()):
+                if print_logs:
+                    print(f"Loading cached FlexControl dataset from: {get_cached_filepath()}")
+                ifile = bz2.BZ2File(get_cached_filepath(), 'rb')
+                data = pickle.load(ifile)
+                ifile.close()
+
+                self.input_grooves = data["input_grooves"]
+                self.output_streams = data["output_streams"]
+                self.flat_output_streams = data["flat_output_streams"]
+                self.encoding_control_tokens = data["encoding_control_tokens"]
+                self.decoding_control_tokens = data["decoding_control_tokens"]
+                self.metadata = data["metadata"]
+                self.tempos = data["tempos"]
+                self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
+
+                process_data = False
+
+        if process_data:
+            # ------------------------------------------------------------------------------------------
+            # load pre-stored hvo_sequences
+            # ------------------------------------------------------------------------------------------
+            n_samples = 0
+            loaded_data_dictionary = {}
+
+            if print_logs:
+                pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files") if len(
+                    self.dataset_files) > 1 else self.dataset_files
+            else:
+                pbar = self.dataset_files
+
+            for dataset_file in pbar:
+                if not isinstance(pbar, list):
+                    pbar.set_description(f"Loading: {dataset_file}")
+                temp = load_pkl_bz2_dict(
+                    os.path.join(get_source_compiled_data_dictionary_path(), dataset_file),
+                    allow_pickle_arrays=True)
+                for k, v in temp.items():
+                    if k not in loaded_data_dictionary:
+                        loaded_data_dictionary[k] = []
+                    if isinstance(v, np.ndarray):
+                        loaded_data_dictionary[k].extend(v.tolist())
+                    else:
+                        loaded_data_dictionary[k].extend(v)
+                n_samples += len(temp["metadata"])
+
+            if downsampled_size is not None:
+                if downsampled_size >= n_samples:
+                    downsampled_size = None
+                else:
+                    downsampled_size = downsampled_size
+            else:
+                downsampled_size = downsampled_size
+
+            # check if only a subset of the data is needed
+            if downsampled_size is not None:
+                sampled_indices = np.random.choice(n_samples, downsampled_size, replace=False)
+                if print_logs:
+                    print(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
+                for k, v in loaded_data_dictionary.items():
+                    loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
+
+            # Populate already available fields
+            # ------------------------------------------------------------------------------------------
+            self.input_grooves = np.array(loaded_data_dictionary["input_hvos"])
+            self.output_streams = np.array(loaded_data_dictionary["output_hvos"])
+            self.flat_output_streams = np.array(loaded_data_dictionary["flat_out_hvos"])
+            self.metadata = loaded_data_dictionary["metadata"]
+            self.tempos = loaded_data_dictionary["qpm"]
+            self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
+
+            # Populate flexible control tokens
+            # ------------------------------------------------------------------------------------------
+            n_encoding_controls = len(self.encoding_control_keys)
+            n_decoding_controls = len(self.decoding_control_keys)
+
+            # Create encoding control tokens tensor
+            encoding_tokens_list = []
+            for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
+                if key in loaded_data_dictionary:
+                    # Set appropriate bounds based on key characteristics
+                    if "Hamming" in key and "Accent" in key:
+                        low, high = 0, 0.85
+                    else:
+                        low, high = 0, 1
+
+                    tokens = TokenizeControls(
+                        control_array=np.round(loaded_data_dictionary[key], 5),
+                        n_bins=n_tokens,
+                        low=low,
+                        high=high
+                    )
+                    encoding_tokens_list.append(tokens)
+                else:
+                    raise KeyError(f"Encoding control key '{key}' not found in data")
+
+            # Stack encoding tokens: shape (n_samples, n_encoding_controls)
+            self.encoding_control_tokens = np.stack(encoding_tokens_list, axis=1)
+
+            # Create decoding control tokens tensor
+            decoding_tokens_list = []
+            for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
+                if key in loaded_data_dictionary:
+                    tokens = TokenizeControls(
+                        control_array=np.round(loaded_data_dictionary[key], 5),
+                        n_bins=n_tokens,
+                        low=0,
+                        high=0.85
+                    )
+                    decoding_tokens_list.append(tokens)
+                else:
+                    raise KeyError(f"Decoding control key '{key}' not found in data")
+
+            # Stack decoding tokens: shape (n_samples, n_decoding_controls)
+            self.decoding_control_tokens = np.stack(decoding_tokens_list, axis=1)
+
+            # cache the processed data
+            # ------------------------------------------------------------------------------------------
+            if use_cached:
+                if print_logs:
+                    print(f"Caching FlexControl dataset at {get_cached_filepath()}")
+                data_to_dump = {
+                    "input_grooves": self.input_grooves,
+                    "output_streams": self.output_streams,
+                    "flat_output_streams": self.flat_output_streams,
+                    "metadata": self.metadata,
+                    "tempos": self.tempos,
+                    "collection": self.collection,
+                    "encoding_control_tokens": self.encoding_control_tokens,
+                    "decoding_control_tokens": self.decoding_control_tokens
+                }
+
+                ofile = bz2.BZ2File(get_cached_filepath(), 'wb')
+                pickle.dump(data_to_dump, ofile)
+                ofile.close()
+
+        # Safety checks - same as before
+        # ------------------------------------------------------------------------------------------
+        def get_invalid_indices(hvo):
+            n_voices = hvo.shape[-1] // 3
+            hits = hvo[:, :, :n_voices]
+            velocities = hvo[:, :, n_voices:2 * n_voices]
+            offsets = hvo[:, :, 2 * n_voices:3 * n_voices]
+            h_invalid_sample_ix, _, _ = np.where((hits > 1) | (hits < 0.0))
+            v_invalid_sample_ix, _, _ = np.where((velocities > 1) | (velocities < 0.0))
+            o_invalid_sample_ix, _, _ = np.where((offsets > 0.5) | (offsets < -0.5))
+            invalid_sample_ix = set(h_invalid_sample_ix).union(set(v_invalid_sample_ix)).union(set(o_invalid_sample_ix))
+            return invalid_sample_ix
+
+        invalid_indices_input = get_invalid_indices(self.input_grooves)
+        invalid_indices_output = get_invalid_indices(self.output_streams)
+        all_invalid_indices = set(invalid_indices_input).union(set(invalid_indices_output))
+
+        # remove invalid samples
+        if len(all_invalid_indices) > 0:
+            if print_logs:
+                print(f"Found {len(all_invalid_indices)} invalid samples. Removing them.")
+                print("Size before removing invalid samples: ", self.input_grooves.shape[0])
+            self.input_grooves = np.delete(self.input_grooves, list(all_invalid_indices), axis=0)
+            self.output_streams = np.delete(self.output_streams, list(all_invalid_indices), axis=0)
+            self.flat_output_streams = np.delete(self.flat_output_streams, list(all_invalid_indices), axis=0)
+            self.encoding_control_tokens = np.delete(self.encoding_control_tokens, list(all_invalid_indices), axis=0)
+            self.decoding_control_tokens = np.delete(self.decoding_control_tokens, list(all_invalid_indices), axis=0)
+            self.metadata = [self.metadata[ix] for ix in range(len(self.metadata)) if ix not in all_invalid_indices]
+            self.tempos = [self.tempos[ix] for ix in range(len(self.tempos)) if ix not in all_invalid_indices]
+            self.collection = [self.collection[ix] for ix in range(len(self.collection)) if
+                               ix not in all_invalid_indices]
+            if print_logs:
+                print("Size after removing invalid samples: ", self.input_grooves.shape[0])
+
+        # Convert to tensors
+        # ------------------------------------------------------------------------------------------
+        self.indices = list(range(len(self.input_grooves)))
+        self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
+        self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
+        self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
+        self.encoding_control_tokens = torch.tensor(self.encoding_control_tokens, dtype=torch.long)
+        self.decoding_control_tokens = torch.tensor(self.decoding_control_tokens, dtype=torch.long)
+
+        # move_all_to_cuda
+        # ------------------------------------------------------------------------------------------
+        if move_all_to_cuda and torch.cuda.is_available():
+            device = torch.device("cuda")
+            self.input_grooves = self.input_grooves.to(device)
+            self.output_streams = self.output_streams.to(device)
+            self.flat_output_streams = self.flat_output_streams.to(device)
+            self.encoding_control_tokens = self.encoding_control_tokens.to(device)
+            self.decoding_control_tokens = self.decoding_control_tokens.to(device)
+
+        self.indices = list(range(len(self.metadata)))
+
+    def __len__(self):
+        return len(self.metadata)
+
+    def __getitem__(self, idx):
+        return (self.input_grooves[idx],
+                self.output_streams[idx],
+                self.encoding_control_tokens[idx],  # tensor shape: (n_encoding_controls,)
+                self.decoding_control_tokens[idx],  # tensor shape: (n_decoding_controls,)
+                self.metadata[idx],
+                self.indices[idx]
+                )
+
+    @classmethod
+    def from_concatenated_datasets(cls,
+                                   config,
+                                   subset_tag,
+                                   use_cached=True,
+                                   downsampled_size=None,
+                                   force_regenerate=False,
+                                   move_all_to_cuda=False,
+                                   print_logs=False):
+        """
+        Alternative constructor that loads multiple dataset files and concatenates them
+        into a single dataset instance for FlexControl configuration.
+        """
+        if print_logs:
+            dataLoaderLogger.info(
+                f"Creating concatenated FlexControl dataset from {len(config['dataset_files'])} files")
+
+        individual_downsampled_size = int(
+            downsampled_size / len(config["dataset_files"])) if downsampled_size is not None else None
+
+        # Load all individual datasets (these can be cached)
+        datasets = []
+        pbar = tqdm.tqdm(config["dataset_files"], desc="Loading FlexControl dataset files") if print_logs else config[
+            "dataset_files"]
+        for dataset_file in pbar:
+            if print_logs:
+                pbar.set_description(f"Loading: {dataset_file}")
+            new_config = config.copy()
+            new_config["dataset_files"] = [dataset_file]
+
+            dataset = cls(
+                config=new_config,
+                subset_tag=subset_tag,
+                use_cached=use_cached,
+                downsampled_size=individual_downsampled_size,
+                force_regenerate=force_regenerate,
+                move_all_to_cuda=False,  # Don't move individual datasets to CUDA yet
+                print_logs=print_logs
+            )
+            datasets.append(dataset)
+
+        # Get common metadata keys
+        common_keys = set.intersection(*(set(ds.metadata[0].keys()) for ds in datasets))
+        if print_logs:
+            dataLoaderLogger.info(f"Loaded {len(datasets)} FlexControl datasets:")
+        for ix, ds in enumerate(datasets):
+            ds.metadata = [{k: v for k, v in sample.items() if k in common_keys} for sample in ds.metadata]
+            if print_logs:
+                dataLoaderLogger.info(f"\t {ix} : {config['dataset_files'][ix]} --> {len(ds)} samples")
+
+        # Concatenate all data
+        if print_logs:
+            dataLoaderLogger.info("Concatenating FlexControl datasets...")
+
+        # Concatenate tensors
+        input_grooves = torch.cat([ds.input_grooves for ds in datasets], dim=0)
+        output_streams = torch.cat([ds.output_streams for ds in datasets], dim=0)
+        flat_output_streams = torch.cat([ds.flat_output_streams for ds in datasets], dim=0)
+        encoding_control_tokens = torch.cat([ds.encoding_control_tokens for ds in datasets], dim=0)
+        decoding_control_tokens = torch.cat([ds.decoding_control_tokens for ds in datasets], dim=0)
+
+        # Concatenate lists
+        metadata = []
+        tempos = []
+        collection = []
+        for ds in datasets:
+            metadata.extend(ds.metadata)
+            tempos.extend(ds.tempos)
+            collection.extend(ds.collection)
+
+        # Create new instance
+        instance = cls.__new__(cls)
+        instance.dataset_root_path = config["dataset_root_path"]
+        instance.dataset_files = config["dataset_files"]
+        instance.subset_tag = subset_tag
+        instance.max_len = config["max_len"]
+        instance.n_encoding_control_tokens = config["n_encoding_control_tokens"]
+        instance.encoding_control_keys = config["encoding_control_keys"]
+        instance.n_decoding_control_tokens = config["n_decoding_control_tokens"]
+        instance.decoding_control_keys = config["decoding_control_keys"]
+
+        # Assign concatenated data
+        instance.input_grooves = input_grooves
+        instance.output_streams = output_streams
+        instance.flat_output_streams = flat_output_streams
+        instance.encoding_control_tokens = encoding_control_tokens
+        instance.decoding_control_tokens = decoding_control_tokens
+        instance.metadata = metadata
+        instance.tempos = tempos
+        instance.collection = collection
+        instance.indices = list(range(len(metadata)))
+
+        # Move to GPU if requested
+        if move_all_to_cuda:
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+                if print_logs:
+                    dataLoaderLogger.info("Moving concatenated FlexControl dataset to CUDA")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = torch.device("mps")
+                if print_logs:
+                    dataLoaderLogger.info("Moving concatenated FlexControl dataset to MPS")
+            else:
+                device = torch.device("cpu")
+                if print_logs:
+                    dataLoaderLogger.warning("CUDA and MPS not available, keeping FlexControl dataset on CPU")
+
+            instance.input_grooves = instance.input_grooves.to(device)
+            instance.output_streams = instance.output_streams.to(device)
+            instance.flat_output_streams = instance.flat_output_streams.to(device)
+            instance.encoding_control_tokens = instance.encoding_control_tokens.to(device)
+            instance.decoding_control_tokens = instance.decoding_control_tokens.to(device)
+
+        if print_logs:
+            dataLoaderLogger.info(f"Concatenated FlexControl dataset created with {len(instance)} samples")
+        return instance
+
+
+def get_flexcontrol_triplestream_dataset(
+        config,
+        subset_tag,  # pass "train" or "validation" or "test"
+        use_cached=True,
+        downsampled_size=None,
+        force_regenerate=False,
+        move_all_to_cuda=False,
+        print_logs=False):
+    """
+    Get FlexControl dataset that returns control tokens as tensors instead of individual tokens.
+    """
+
+    try:
+        cfg_dict = config.as_dict()
+    except:
+        cfg_dict = config
+
+    return FlexControlGroove2TripleStream2BarDataset.from_concatenated_datasets(
+        config=cfg_dict,
+        subset_tag=subset_tag,
+        use_cached=use_cached,
+        downsampled_size=downsampled_size,
+        force_regenerate=force_regenerate,
+        move_all_to_cuda=move_all_to_cuda,
+        print_logs=print_logs
+    )
+
 if __name__ == "__main__":
     # tester
     dataLoaderLogger.info("Run demos/data/demo.py to test")
@@ -701,3 +1102,34 @@ if __name__ == "__main__":
             print(item.device)
         break
 
+
+
+    # FLEX Control Dataset
+    flex_dataset = FlexControlGroove2TripleStream2BarDataset.from_concatenated_datasets(
+        config=yaml.load(open("helpers/configs/FlexibleControlTesting.yaml", "r"), Loader=yaml.FullLoader),
+        subset_tag="train",
+        use_cached=False,
+        downsampled_size=None,
+        force_regenerate=False,
+        move_all_to_cuda=False
+    )
+
+    flex_loader = DataLoader(
+        flex_dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0,  # <—
+        drop_last=False
+    )
+
+    for batch in flex_loader:
+        for item in batch[:-2]:
+            print(item.device)
+        break
+
+    # Check if the dataset is loaded correctly
+    print(f"Loaded FlexControl dataset with {len(flex_dataset)} samples")
+    print(f"Input grooves shape: {flex_dataset.input_grooves.shape}")
+    print(f"Output streams shape: {flex_dataset.output_streams.shape}")
+    print(f"Encoding control tokens shape: {flex_dataset.encoding_control_tokens.shape}")
+    print(f"Decoding control tokens shape: {flex_dataset.decoding_control_tokens.shape}")

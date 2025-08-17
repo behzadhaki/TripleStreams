@@ -1,0 +1,78 @@
+# Data parameters (your original format)
+dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
+dataset_files:
+    - 01_candombe_four_voices.pkl.bz2
+
+# ===================================================================================
+# Flexible Control Configuration
+# ===================================================================================
+
+# Encoding Controls (converted from legacy encoding_control1/2)
+n_encoding_control_tokens: [33, 10]  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
+encoding_control_modes: ['prepend', 'add']  # Strategic: first prepended, second added
+encoding_control_keys:
+  - "Flat Out Vs. Input | Hits | Hamming"     # Was: encoding_control1_key
+  - "Flat Out Vs. Input | Accent | Hamming"   # Was: encoding_control2_key
+
+# Decoding Controls (converted from legacy decoding_control1/2/3)
+n_decoding_control_tokens: [10, 10, 10]  # Was: n_decoding_control1/2/3_tokens: 10
+decoding_control_modes: ['prepend', 'prepend', 'prepend']  # All prepended (legacy behavior)
+decoding_control_keys:
+  - "Stream 1 Vs. Flat Out | Hits | Hamming"  # Was: decoding_control1_key
+  - "Stream 2 Vs. Flat Out | Hits | Hamming"  # Was: decoding_control2_key
+  - "Stream 3 Vs. Flat Out | Hits | Hamming"  # Was: decoding_control3_key
+
+
+# Model architecture
+max_len: 32
+batch_size: 256
+d_model_enc: 64
+d_model_dec: 128
+dim_feedforward_enc: 128
+dim_feedforward_dec: 512
+dropout: 0.1
+embedding_size_src: 3
+embedding_size_tgt: 9
+epochs: 1000
+latent_dim: 128
+lr: 0.0006369948608989782
+nhead_enc: 8
+nhead_dec: 8
+num_encoder_layers: 7
+num_decoder_layers: 12
+offset_dropout: 0
+velocity_dropout: 0
+optimizer: "adam"
+
+# Loss scaling
+scale_h_loss: 1
+scale_v_loss: 4
+scale_o_loss: 10
+
+# Step-based beta annealing
+beta_annealing_period_steps: 4           # 25,000 steps per cycle
+beta_annealing_start_first_rise_at_step: 1  # 5,000 steps warmup
+beta_annealing_per_cycle_rising_ratio: 0.5
+beta_annealing_activated: true
+beta_level: 0.2
+
+# Step-based logging frequencies
+step_log_frequency: 2                        # Log every 50 steps
+step_hit_score_frequency: 8                # Hit scores every 2000 steps
+step_piano_roll_frequency: 1               # Piano rolls every 1500 steps
+
+# Evaluation settings
+calculate_hit_scores_on_train: true
+calculate_hit_scores_on_test: true
+piano_roll_samples: true
+
+# Model saving
+save_model: true
+save_model_frequency_steps: 10000             # Save every 10000 steps
+save_model_dir: "misc/TripleStreamsVAE"
+
+# Testing
+is_testing: true
+
+# WANDB
+wandb_project: "TripleStreamsVAE_StepBased_Clean"
