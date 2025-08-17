@@ -766,9 +766,11 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             if " Relative Density" not in loaded_data_dictionary:
                 stream_1_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 0], axis=-1)
                 stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
-                stream_3_hits = np.sum(np.array(loaded_data_dictionsary["output_hvos"])[:, :, 2], axis=-1)
+                stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
 
                 total_hits = stream_1_hits + stream_2_hits + stream_3_hits
+                # replace zeros with 1
+                total_hits[total_hits == 0] = 1
 
                 loaded_data_dictionary["Stream 1 Relative Density"] = stream_1_hits / total_hits
                 loaded_data_dictionary["Stream 2 Relative Density"] = stream_2_hits / total_hits
@@ -830,8 +832,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             # Create decoding control tokens tensor
             decoding_tokens_list = []
             for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
-                if "hamming" in key:
-                    assert key in self.encoding_control_keys, f"Decoding control key '{key}' should be in encoding controls"
+                if "Hamming" in key:
+                    assert key in self.decoding_control_keys, f"Decoding control key '{key}' should be in decoding controls"
                     tokens = TokenizeControls(
                         control_array=np.round(loaded_data_dictionary[key], 5),
                         n_bins=n_tokens,
@@ -839,7 +841,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                         high=0.85
                     )
                     decoding_tokens_list.append(tokens)
-                elif " Relative Density" in key:
+                elif "Relative Density" in key:
                     tokens = TokenizeControls(
                         control_array=np.round(loaded_data_dictionary[key], 5),
                         n_bins=n_tokens,
