@@ -194,7 +194,7 @@ def map_value_to_bins(value, edges):
     print("SHOULD NOT REACH HERE")
 
 def TokenizeControls(
-        control_array: np.ndarray,
+        control_array: np.array,
         n_bins: int,
         low: float = 0,
         high: float = 1
@@ -688,6 +688,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.encoding_control_keys = config["encoding_control_keys"]
         self.n_decoding_control_tokens = config["n_decoding_control_tokens"]
         self.decoding_control_keys = config["decoding_control_keys"]
+        features = {}
 
         def get_source_compiled_data_dictionary_path():
             return os.path.join(self.dataset_root_path, self.subset_tag)
@@ -717,8 +718,6 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
 
         if use_cached and not force_regenerate:
             if os.path.exists(get_cached_filepath()):
-                if print_logs:
-                    print(f"Loading cached FlexControl dataset from: {get_cached_filepath()}")
                 ifile = bz2.BZ2File(get_cached_filepath(), 'rb')
                 data = pickle.load(ifile)
                 ifile.close()
@@ -728,6 +727,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 self.flat_output_streams = data["flat_output_streams"]
                 self.encoding_control_tokens = data["encoding_control_tokens"]
                 self.decoding_control_tokens = data["decoding_control_tokens"]
+                self.encoding_control_values = data["encoding_control_values"]
+                self.decoding_control_values = data["decoding_control_values"]
                 self.metadata = data["metadata"]
                 self.tempos = data["tempos"]
                 self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
@@ -762,19 +763,33 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                         loaded_data_dictionary[k].extend(v)
                 n_samples += len(temp["metadata"])
 
+            features.update({"Flat Out Vs. Input | Hits | Hamming": loaded_data_dictionary["Flat Out Vs. Input | Hits | Hamming"]})
+            features.update({"Flat Out Vs. Input | Accent | Hamming": loaded_data_dictionary["Flat Out Vs. Input | Accent | Hamming"]})
+            features.update({"Stream 1 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary["Stream 1 Vs. Flat Out | Hits | Hamming"]})
+            features.update({"Stream 2 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary["Stream 2 Vs. Flat Out | Hits | Hamming"]})
+            features.update({"Stream 3 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary["Stream 3 Vs. Flat Out | Hits | Hamming"]})
+
             # Check if relative hit density is present
-            if "Relative Density" not in loaded_data_dictionary:
+            if "Relative Density" not in loaded_data_dictionary or "Total Out Hits" not in loaded_data_dictionary:
                 stream_1_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 0], axis=-1)
                 stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
                 stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
 
                 total_hits = stream_1_hits + stream_2_hits + stream_3_hits
+                features.update({"Total Out Hits": total_hits.tolist()})
+
                 # replace zeros with 1
                 total_hits[total_hits == 0] = 1
 
-                loaded_data_dictionary["Stream 1 Relative Density"] = stream_1_hits / total_hits
-                loaded_data_dictionary["Stream 2 Relative Density"] = stream_2_hits / total_hits
-                loaded_data_dictionary["Stream 3 Relative Density"] = stream_3_hits / total_hits
+                features.update({"Stream 1 Relative Density": (stream_1_hits / total_hits).tolist() })
+                features.update({"Stream 2 Relative Density": (stream_2_hits / total_hits).tolist() })
+                features.update({"Stream 3 Relative Density": (stream_3_hits / total_hits).tolist() })
+
+            if "Structural Similarity Distance" not in loaded_data_dictionary:
+                # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
+                flat_in_vels = np.array(loaded_data_dictionary["input_hvos"])[:, :, 1]
+                flat_out_vels = np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 1]
+                features.update({"Structural Similarity Distance":  ((((flat_in_vels - flat_out_vels)**2).sum(axis=-1))**0.5).tolist()})
 
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
@@ -791,6 +806,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     print(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
                 for k, v in loaded_data_dictionary.items():
                     loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
+                features = {k: v[sampled_indices] for k, v in features.items() if k in loaded_data_dictionary}
 
             # Populate already available fields
             # ------------------------------------------------------------------------------------------
@@ -801,59 +817,60 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.tempos = loaded_data_dictionary["qpm"]
             self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
 
+            # Collate and tokenize control tokens
+            # ------------------------------------------------------------------------------------------
             # Populate flexible control tokens
             # ------------------------------------------------------------------------------------------
             n_encoding_controls = len(self.encoding_control_keys)
             n_decoding_controls = len(self.decoding_control_keys)
 
             # Create encoding control tokens tensor
+            encoding_control_values_list = []
             encoding_tokens_list = []
             for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
-                if key in loaded_data_dictionary:
-                    # Set appropriate bounds based on key characteristics
-                    if "Hamming" in key and "Accent" in key:
-                        low, high = 0, 0.85
-                    else:
-                        low, high = 0, 1
-
-                    tokens = TokenizeControls(
-                        control_array=np.round(loaded_data_dictionary[key], 5),
-                        n_bins=n_tokens,
-                        low=low,
-                        high=high
-                    )
-                    encoding_tokens_list.append(tokens)
+                # control array may either be in features or loaded_data_dictionary
+                if key in features:
+                    control_array = np.round(features[key], 5)
                 else:
                     raise KeyError(f"Encoding control key '{key}' not found in data")
 
+                encoding_control_values_list.append(control_array)
+                tokens = TokenizeControls(
+                    control_array=control_array,
+                    n_bins=n_tokens,
+                    low=0,
+                    high=control_array.max()
+                )
+                encoding_tokens_list.append(tokens)
+
             # Stack encoding tokens: shape (n_samples, n_encoding_controls)
-            self.encoding_control_tokens = np.stack(encoding_tokens_list, axis=1)
+            self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
+            self.encoding_control_tokens = np.stack(encoding_tokens_list,
+                                                    axis=1)  # Shape (n_samples, n_encoding_controls)
 
             # Create decoding control tokens tensor
+            decoding_control_values_list = []
             decoding_tokens_list = []
             for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
-                if "Hamming" in key:
-                    assert key in self.decoding_control_keys, f"Decoding control key '{key}' should be in decoding controls"
-                    tokens = TokenizeControls(
-                        control_array=np.round(loaded_data_dictionary[key], 5),
-                        n_bins=n_tokens,
-                        low=0,
-                        high=0.85
-                    )
-                    decoding_tokens_list.append(tokens)
-                elif "Relative Density" in key:
-                    tokens = TokenizeControls(
-                        control_array=np.round(loaded_data_dictionary[key], 10),
-                        n_bins=n_tokens,
-                        low=0,
-                        high=1
-                    )
-                    decoding_tokens_list.append(tokens)
+                # control array may either be in features or loaded_data_dictionary
+                if key in features:
+                    control_array = np.round(features[key], 5)
                 else:
                     raise KeyError(f"Decoding control key '{key}' not found in data")
 
+                decoding_control_values_list.append(control_array)
+                tokens = TokenizeControls(
+                    control_array=control_array,
+                    n_bins=n_tokens,
+                    low=0,
+                    high=control_array.max()
+                )
+                decoding_tokens_list.append(tokens)
+
             # Stack decoding tokens: shape (n_samples, n_decoding_controls)
-            self.decoding_control_tokens = np.stack(decoding_tokens_list, axis=1)
+            self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
+            self.decoding_control_tokens = np.stack(decoding_tokens_list,
+                                                    axis=1)  # Shape (n_samples, n_decoding_controls)
 
             # cache the processed data
             # ------------------------------------------------------------------------------------------
@@ -867,7 +884,9 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     "metadata": self.metadata,
                     "tempos": self.tempos,
                     "collection": self.collection,
+                    "encoding_control_values": self.encoding_control_values,
                     "encoding_control_tokens": self.encoding_control_tokens,
+                    "decoding_control_values": self.decoding_control_values,
                     "decoding_control_tokens": self.decoding_control_tokens
                 }
 
@@ -891,7 +910,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         invalid_indices_input = get_invalid_indices(self.input_grooves)
         invalid_indices_output = get_invalid_indices(self.output_streams)
         all_invalid_indices = set(invalid_indices_input).union(set(invalid_indices_output))
-
+        
         # remove invalid samples
         if len(all_invalid_indices) > 0:
             if print_logs:
@@ -909,6 +928,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             if print_logs:
                 print("Size after removing invalid samples: ", self.input_grooves.shape[0])
 
+        
+
         # Convert to tensors
         # ------------------------------------------------------------------------------------------
         self.indices = list(range(len(self.input_grooves)))
@@ -917,6 +938,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
         self.encoding_control_tokens = torch.tensor(self.encoding_control_tokens, dtype=torch.long)
         self.decoding_control_tokens = torch.tensor(self.decoding_control_tokens, dtype=torch.long)
+        self.decoding_control_values = torch.tensor(self.decoding_control_values, dtype=torch.float32)
+        self.encoding_control_values = torch.tensor(self.encoding_control_values, dtype=torch.float32)
 
         # move_all_to_cuda
         # ------------------------------------------------------------------------------------------
@@ -1002,6 +1025,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         flat_output_streams = torch.cat([ds.flat_output_streams for ds in datasets], dim=0)
         encoding_control_tokens = torch.cat([ds.encoding_control_tokens for ds in datasets], dim=0)
         decoding_control_tokens = torch.cat([ds.decoding_control_tokens for ds in datasets], dim=0)
+        encoding_control_values = torch.cat([ds.encoding_control_values for ds in datasets], dim=0)
+        decoding_control_values = torch.cat([ds.decoding_control_values for ds in datasets], dim=0)
 
         # Concatenate lists
         metadata = []
@@ -1029,6 +1054,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         instance.flat_output_streams = flat_output_streams
         instance.encoding_control_tokens = encoding_control_tokens
         instance.decoding_control_tokens = decoding_control_tokens
+        instance.encoding_control_values = encoding_control_values
+        instance.decoding_control_values = decoding_control_values
         instance.metadata = metadata
         instance.tempos = tempos
         instance.collection = collection
@@ -1097,44 +1124,72 @@ if __name__ == "__main__":
     # Load Mega dataset as torch.utils.data.Dataset
 
     import yaml
-    from data import Groove2TripleStream2BarDataset
-    # load dataset as torch.utils.data.Dataset
-    training_dataset = Groove2TripleStream2BarDataset.from_concatenated_datasets(
-        config=yaml.load(open("helpers/configs/Testing.yaml", "r"), Loader=yaml.FullLoader),
-        subset_tag="train",
-        use_cached=False,
-        downsampled_size=None,
-        force_regenerate=False,
-        move_all_to_cuda=False
-    )
-    max(training_dataset.encoding_control1_tokens)
-    max(training_dataset.encoding_control2_tokens)
-    max(training_dataset.decoding_control1_tokens)
-
     from torch.utils.data import DataLoader
-    loader = DataLoader(
-        training_dataset,
-        batch_size=4,
-        shuffle=False,
-        num_workers=0,  # <—
-        drop_last=False
-    )
 
-    for batch in loader:
-        for item in batch[:-2]:
-            print(item.device)
-        break
+
+    # # load dataset as torch.utils.data.Dataset
+    # from data import Groove2TripleStream2BarDataset
+    #
+    # training_dataset = Groove2TripleStream2BarDataset.from_concatenated_datasets(
+    #     config=yaml.load(open("helpers/configs/Testing.yaml", "r"), Loader=yaml.FullLoader),
+    #     subset_tag="train",
+    #     use_cached=False,
+    #     downsampled_size=None,
+    #     force_regenerate=False,
+    #     move_all_to_cuda=False
+    # )
+    # max(training_dataset.encoding_control1_tokens)
+    # max(training_dataset.encoding_control2_tokens)
+    # max(training_dataset.decoding_control1_tokens)
+    #
+    # loader = DataLoader(
+    #     training_dataset,
+    #     batch_size=4,
+    #     shuffle=False,
+    #     num_workers=0,  # <—
+    #     drop_last=False
+    # )
+    #
+    # for batch in loader:
+    #     for item in batch[:-2]:
+    #         print(item.device)
+    #     break
 
 
 
     # FLEX Control Dataset
+    from data import FlexControlGroove2TripleStream2BarDataset
+
+    config = {
+        'dataset_root_path': "data/triple_streams/model_ready/AccentAt0.75/",
+        'max_len': 32,
+        'dataset_files':
+            ["01_candombe_four_voices.pkl.bz2"],
+
+        # Encoding Controls (converted from legacy encoding_control1/2)
+        'n_encoding_control_tokens': [33, 5],  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
+        'encoding_control_modes': ['prepend', 'prepend'],  # Strategic: first prepended, second added
+        'encoding_control_keys':
+            ["Structural Similarity Distance",  # Was: encoding_control1_key
+            "Flat Out Vs. Input | Accent | Hamming"],  # Was: encoding_control2_key
+
+        # Decoding Controls (converted from legacy decoding_control1/2/3)
+        'n_decoding_control_tokens': [97, 10, 10, 10],  # Was: n_decoding_control1/2/3_tokens: 10
+        'decoding_control_modes': ['prepend', 'prepend', 'prepend', 'prepend'],  # All prepended (legacy behavior)
+        'decoding_control_keys':
+            ["Total Out Hits",
+            "Stream 1 Relative Density",
+             "Stream 2 Relative Density",
+             "Stream 3 Relative Density"]
+    }
     flex_dataset = FlexControlGroove2TripleStream2BarDataset.from_concatenated_datasets(
-        config=yaml.load(open("helpers/configs/FlexibleControlTesting.yaml", "r"), Loader=yaml.FullLoader),
+        config=config,
         subset_tag="train",
-        use_cached=False,
+        use_cached=True,
         downsampled_size=None,
         force_regenerate=False,
-        move_all_to_cuda=False
+        move_all_to_cuda=False,
+        print_logs=True
     )
 
     flex_loader = DataLoader(
