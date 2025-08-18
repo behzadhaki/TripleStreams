@@ -241,7 +241,7 @@ def validate_control_configuration(config):
         "Number of decoding control tokens must match number of decoding control keys"
 
     # Check that modes are valid
-    valid_modes = ['prepend', 'add']
+    valid_modes = ['prepend', 'add', 'compact_attention']
     for mode in config['encoding_control_modes']:
         assert mode in valid_modes, f"Invalid encoding control mode: {mode}. Must be one of {valid_modes}"
     for mode in config['decoding_control_modes']:
