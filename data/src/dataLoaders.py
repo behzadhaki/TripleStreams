@@ -763,7 +763,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 n_samples += len(temp["metadata"])
 
             # Check if relative hit density is present
-            if " Relative Density" not in loaded_data_dictionary:
+            if "Relative Density" not in loaded_data_dictionary:
                 stream_1_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 0], axis=-1)
                 stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
                 stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
@@ -843,7 +843,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     decoding_tokens_list.append(tokens)
                 elif "Relative Density" in key:
                     tokens = TokenizeControls(
-                        control_array=np.round(loaded_data_dictionary[key], 5),
+                        control_array=np.round(loaded_data_dictionary[key], 10),
                         n_bins=n_tokens,
                         low=0,
                         high=1
