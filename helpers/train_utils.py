@@ -467,16 +467,69 @@ def save_model_checkpoint_enhanced(model, optimizer, beta_scheduler, step, save_
     return {}
 
 
-def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function):
+def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_profile=None, use_hit_mask=False):
+    """
+    Calculate hit loss with optional inverse metrical weighting.
+
+    Args:
+        hit_logits: Model logits for hit prediction
+        hit_targets: Target hit labels
+        hit_loss_function: Loss function (BCEWithLogitsLoss, FocalLoss, or DiceLoss)
+        metrical_profile: Optional metrical strength profile for inverse weighting
+
+    Returns:
+        loss_h: Computed loss
+        hit_mask: Applied weighting mask
+    """
+    # Longuet-Higgins & Lee (1984) metrical profile for 4/4 time
+    # "The Rhythmic Interpretation of Monophonic Music"
+    # Cognitive Science, 8(2), 107-123
+    # 32nd note resolution over 2 bars of 4/4 time
+    LONGUET_HIGGINS_LEE_PROFILE = [
+        5, 1, 2, 1, 3, 1, 2, 1, 4, 1, 2, 1, 3, 1, 2, 1,  # Bar 1
+        5, 1, 2, 1, 3, 1, 2, 1, 4, 1, 2, 1, 3, 1, 2, 1  # Bar 2
+    ]
+
     assert isinstance(hit_loss_function, torch.nn.BCEWithLogitsLoss) or isinstance(hit_loss_function,
                                                                                    FocalLoss) or isinstance(
         hit_loss_function,
         DiceLoss), f"hit_loss_function must be an instance of torch.nn.BCEWithLogitsLoss or FocalLoss or DiceLoss. Got {type(hit_loss_function)}"
+
     loss_h = hit_loss_function(hit_logits, hit_targets)
-    hit_mask = None
+
     if hit_loss_function.reduction == 'none':
-        # put more weight on the hits
-        hit_mask = (hit_targets > 0).float() * 3 + 1  # hits weighted almost 4x more than misses
+        # Base weighting: put more weight on the hits
+        hit_mask = (hit_targets > 0).float() * 3 + 1  if use_hit_mask else None # hits weighted ~4x more than misses
+
+        # Use default profile if none provided
+        if metrical_profile is None:
+            metrical_profile = LONGUET_HIGGINS_LEE_PROFILE
+
+        # Add inverse metrical weighting
+        if metrical_profile is not None:
+            # Convert to tensor and match the sequence length
+            metrical_weights = torch.tensor(metrical_profile, dtype=torch.float32, device=hit_targets.device)
+
+            # Tile/repeat to match sequence length if needed
+            seq_len = hit_targets.shape[-1]  # assuming last dim is sequence
+            if len(metrical_weights) != seq_len:
+                repeat_factor = seq_len // len(metrical_weights)
+                remainder = seq_len % len(metrical_weights)
+                metrical_weights = torch.cat([
+                    metrical_weights.repeat(repeat_factor),
+                    metrical_weights[:remainder]
+                ])
+
+            # Inverse weighting: higher metrical strength = lower weight
+            # Metrical strengths: 5 (downbeat) → 0.2 weight, 1 (weak) → 1.0 weight
+            inverse_metrical_weights = 1.0 / (metrical_weights + 1e-8)
+
+            # Normalize so the mean weight is 1 (for training stability)
+            inverse_metrical_weights = inverse_metrical_weights / inverse_metrical_weights.mean()
+
+            # Apply metrical weighting
+            hit_mask = hit_mask * inverse_metrical_weights if hit_mask is not None else inverse_metrical_weights
+
         loss_h = loss_h * hit_mask
         loss_h = loss_h.mean()
 
