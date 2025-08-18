@@ -1,4 +1,5 @@
-#  Copyright (c) 2025. \n Created by Behzad Haki. behzad.haki@upf.edu
+#  Copyright (c) 2025.
+# Created by Behzad Haki. behzad.haki@upf.edu
 
 import torch
 import json
@@ -12,6 +13,7 @@ from model.FlexControlTripleStreamsVAE.components import TensorBasedInputGrooveL
 class FlexControlTripleStreamsVAE(torch.nn.Module):
     """
     An encoder-decoder VAE transformer with flexible control token support
+    Now supports: 'prepend', 'add', and 'compact_attention' modes
     """
 
     def __init__(self, config):
@@ -35,9 +37,9 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
             # Flexible control configuration
             n_encoding_control_tokens: list of ints, number of tokens for each encoding control
-            encoding_control_modes: list of strings, mode for each encoding control ('prepend' or 'add')
+            encoding_control_modes: list of strings, mode for each encoding control ('prepend', 'add', or 'compact_attention')
             n_decoding_control_tokens: list of ints, number of tokens for each decoding control
-            decoding_control_modes: list of strings, mode for each decoding control ('prepend' or 'add')
+            decoding_control_modes: list of strings, mode for each decoding control ('prepend', 'add', or 'compact_attention')
 
             device: the device to use
         """
@@ -60,6 +62,11 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
             "Number of encoding control tokens must match number of encoding control modes"
         assert len(self.n_decoding_control_tokens) == len(self.decoding_control_modes), \
             "Number of decoding control tokens must match number of decoding control modes"
+
+        # Validate control modes
+        valid_modes = {'prepend', 'add', 'compact_attention'}
+        for mode in self.encoding_control_modes + self.decoding_control_modes:
+            assert mode in valid_modes, f"Invalid control mode: {mode}. Must be one of {valid_modes}"
 
         # Count prepended controls for latent layer sizing
         self.n_prepended_encoding_controls = sum(1 for mode in self.encoding_control_modes if mode == 'prepend')
@@ -168,10 +175,6 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         self.VelocityOutputLayer.init_weights(initrange)
         self.OffsetDecoderInput.init_weights(initrange)
         self.OffsetOutputLayer.init_weights(initrange)
-
-    @torch.jit.export
-    def get_latent_dim(self):
-        return self.latent_dim
 
     @torch.jit.export
     def encodeLatent(self, flat_hvo_groove: torch.Tensor, encoding_control_tokens: torch.Tensor):
@@ -391,7 +394,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         )
 
         if is_legacy_checkpoint:
-            print("🔄 Detected legacy checkpoint format. Converting to flexible format...")
+            print("📄 Detected legacy checkpoint format. Converting to flexible format...")
             state_dict = self._convert_legacy_state_dict(state_dict)
             print("✅ Successfully converted legacy checkpoint parameters")
 
@@ -486,7 +489,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
         if filename is None:
             import datetime
-            filename = f'GenDensTempVAE_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
+            filename = f'TripleStreams_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
         is_train = self.training
         self.eval()
         save_path = os.path.join(save_folder, filename)
@@ -499,9 +502,12 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         if is_train:
             self.train()
 
+    @torch.jit.export
+    def get_latent_dim(self):
+        return self.latent_dim
 
 if __name__ == "__main__":
-    # Test configuration with flexible controls
+    # Test configuration with flexible controls including compact_attention
     config = {
         'd_model_enc': 128,
         'd_model_dec': 128,
@@ -520,11 +526,11 @@ if __name__ == "__main__":
         'offset_dropout': 0.2,
         'device': 'cpu',
 
-        # Flexible control configuration
+        # Flexible control configuration with compact_attention
         'n_encoding_control_tokens': [13, 10],
-        'encoding_control_modes': ['prepend', 'add'],
+        'encoding_control_modes': ['prepend', 'compact_attention'],
         'n_decoding_control_tokens': [10, 10, 10],
-        'decoding_control_modes': ['prepend', 'prepend', 'prepend']
+        'decoding_control_modes': ['compact_attention', 'prepend', 'add']
     }
 
     # Create control tokens as TENSORS (not lists)
@@ -573,26 +579,53 @@ if __name__ == "__main__":
     print(f"  hvo shape: {hvo.shape}")
     print(f"  latent_z shape: {latent_z.shape}")
 
-    # Test with different control configuration (all add mode)
-    config_all_add = config.copy()
-    config_all_add.update({
+    # Test with different control configuration (all compact_attention mode)
+    config_all_compact = config.copy()
+    config_all_compact.update({
         'n_encoding_control_tokens': [13, 10],
-        'encoding_control_modes': ['add', 'add'],
+        'encoding_control_modes': ['compact_attention', 'compact_attention'],
         'n_decoding_control_tokens': [10, 10, 10],
-        'decoding_control_modes': ['add', 'add', 'add']
+        'decoding_control_modes': ['compact_attention', 'compact_attention', 'compact_attention']
     })
 
-    model_all_add = FlexControlTripleStreamsVAE(config_all_add)
-    print(f"\nAll-add model:")
-    print(f"  Prepended encoding controls: {model_all_add.n_prepended_encoding_controls}")
-    print(f"  Prepended decoding controls: {model_all_add.n_prepended_decoding_controls}")
+    model_all_compact = FlexControlTripleStreamsVAE(config_all_compact)
+    print(f"\nAll-compact-attention model:")
+    print(f"  Prepended encoding controls: {model_all_compact.n_prepended_encoding_controls}")
+    print(f"  Prepended decoding controls: {model_all_compact.n_prepended_decoding_controls}")
 
-    hvo_add, _ = model_all_add.predict(
+    hvo_compact, _ = model_all_compact.predict(
         flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
         encoding_control_tokens=encoding_control_tokens,
         decoding_control_tokens=decoding_control_tokens
     )
-    print(f"  All-add prediction successful: {hvo_add.shape}")
+    print(f"  All-compact-attention prediction successful: {hvo_compact.shape}")
+
+    # Test mixed modes
+    config_mixed = config.copy()
+    config_mixed.update({
+        'n_encoding_control_tokens': [13, 10, 5],
+        'encoding_control_modes': ['prepend', 'add', 'compact_attention'],
+        'n_decoding_control_tokens': [10, 10, 10, 5],
+        'decoding_control_modes': ['prepend', 'add', 'compact_attention', 'compact_attention']
+    })
+
+    # Update control tokens for mixed test
+    encoding_control_tokens_mixed = torch.tensor([[1, 2, 1]], dtype=torch.long)  # (1, 3)
+    decoding_control_tokens_mixed = torch.tensor([[1, 2, 3, 1]], dtype=torch.long)  # (1, 4)
+
+    model_mixed = FlexControlTripleStreamsVAE(config_mixed)
+    print(f"\nMixed-modes model:")
+    print(f"  Encoding modes: {model_mixed.encoding_control_modes}")
+    print(f"  Decoding modes: {model_mixed.decoding_control_modes}")
+    print(f"  Prepended encoding controls: {model_mixed.n_prepended_encoding_controls}")
+    print(f"  Prepended decoding controls: {model_mixed.n_prepended_decoding_controls}")
+
+    hvo_mixed, _ = model_mixed.predict(
+        flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+        encoding_control_tokens=encoding_control_tokens_mixed,
+        decoding_control_tokens=decoding_control_tokens_mixed
+    )
+    print(f"  Mixed-modes prediction successful: {hvo_mixed.shape}")
 
     # Test TorchScript serialization
     print(f"\nTesting TorchScript serialization...")
@@ -620,5 +653,11 @@ if __name__ == "__main__":
         print(f"❌ Compatibility method failed: {e}")
 
     print(f"\n🎉 All tests completed!")
+    print(f"\n📝 Summary:")
+    print(f"  - Added 'compact_attention' mode alongside 'prepend' and 'add'")
+    print(f"  - CompactControlAttention applies learned attention between controls and all sequence positions")
+    print(f"  - Controls using compact_attention influence the entire 32-step sequence through attention weights")
+    print(f"  - Backward compatible with existing 'prepend' and 'add' modes")
+    print(f"  - TorchScript compatible")
 
-    model.serialize(save_folder='./', filename='triplestreams_vae_test.pt')
+    model.serialize(save_folder='./', filename='triplestreams_vae_compact_attention.pt')

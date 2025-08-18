@@ -1,4 +1,5 @@
-#  Copyright (c) 2022. \n Created by Behzad Haki. behzad.haki@upf.edu
+#  Copyright (c) 2022.
+# Created by Behzad Haki. behzad.haki@upf.edu
 
 import torch
 import math
@@ -42,7 +43,7 @@ class PositionalEncoding(torch.nn.Module):
         pe = pe.unsqueeze(0)  # Shape (1, max_len, d_model)
         self.register_buffer('pe', pe)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         r"""Inputs of forward function
         Args:
             x: the sequence fed to the positional encoder model (required).
@@ -56,11 +57,64 @@ class PositionalEncoding(torch.nn.Module):
         return self.dropout(x)
 
 
+# --------------------------------------------------------------------------------
+# ------------       Compact Control Attention BLOCK        ---------------------
+# --------------------------------------------------------------------------------
+class CompactControlAttention(torch.nn.Module):
+    """
+    Compact control attention mechanism optimized for short sequences (32 steps).
+    Each control token influences all sequence positions through learned attention.
+    """
+
+    def __init__(self, d_model, dropout=0.1):
+        super(CompactControlAttention, self).__init__()
+        self.d_model = d_model
+        self.control_query = torch.nn.Linear(d_model, d_model)
+        self.control_key = torch.nn.Linear(d_model, d_model)
+        self.control_value = torch.nn.Linear(d_model, d_model)
+        self.output_proj = torch.nn.Linear(d_model, d_model)
+        self.dropout = torch.nn.Dropout(dropout)
+
+    def init_weights(self, initrange=0.1):
+        for module in [self.control_query, self.control_key, self.control_value, self.output_proj]:
+            module.weight.data.uniform_(-initrange, initrange)
+            module.bias.data.zero_()
+
+    @torch.jit.export
+    def forward(self, sequence: torch.Tensor, control_embeddings: List[torch.Tensor]):
+        """
+        Apply compact control attention to sequence
+
+        :param sequence: (batch, seq_len, d_model)
+        :param control_embeddings: list of (batch, d_model) tensors
+        :return: (batch, seq_len, d_model)
+        """
+        queries = self.control_query(sequence)  # (batch, seq_len, d_model)
+        output = sequence
+
+        for control_emb in control_embeddings:
+            keys = self.control_key(control_emb).unsqueeze(1)  # (batch, 1, d_model)
+            values = self.control_value(control_emb).unsqueeze(1)  # (batch, 1, d_model)
+
+            # Attention weights for each position
+            attn_weights = torch.softmax(
+                torch.bmm(queries, keys.transpose(1, 2)) / math.sqrt(self.d_model),
+                dim=-1
+            )  # (batch, seq_len, 1)
+
+            # Apply attention
+            attended = torch.bmm(attn_weights, values)  # (batch, seq_len, d_model)
+            attended = self.dropout(attended)
+            output = output + self.output_proj(attended)
+
+        return output
+
+
 class TensorBasedInputGrooveLayer(torch.nn.Module):
     """
     TorchScript-compatible input layer using tensors instead of lists.
 
-    Control modes: 0 = prepend, 1 = add
+    Control modes: 0 = prepend, 1 = add, 2 = compact_attention
     """
 
     def __init__(self, embedding_size, d_model, max_len,
@@ -74,8 +128,9 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         self.max_len = max_len
         self.d_model = d_model
 
-        # Convert modes to integers and store as buffer (0=prepend, 1=add)
-        mode_ints = [0 if mode == 'prepend' else 1 for mode in encoding_control_modes]
+        # Convert modes to integers and store as buffer (0=prepend, 1=add, 2=compact_attention)
+        mode_mapping = {'prepend': 0, 'add': 1, 'compact_attention': 2}
+        mode_ints = [mode_mapping[mode] for mode in encoding_control_modes]
         self.register_buffer('encoding_control_modes', torch.tensor(mode_ints, dtype=torch.long))
 
         # Count prepended controls
@@ -90,7 +145,15 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
             elif mode == 'add':
                 # Add mode: embedding outputs max_len * d_model for reshaping and addition
                 embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=max_len * d_model)
+            elif mode == 'compact_attention':
+                # Compact attention mode: embedding outputs d_model dimensions
+                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
+            else:
+                raise ValueError(f"Unknown encoding control mode: {mode}")
             self.control_embeddings.append(embedding)
+
+        # Add compact attention module
+        self.compact_attention = CompactControlAttention(d_model, positional_encoding_dropout)
 
         # Positional encoding handles max_len + number of prepended controls
         self.PositionalEncoding = PositionalEncoding(
@@ -109,6 +172,7 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
     def init_weights(self, initrange=0.1):
         for embedding in self.control_embeddings:
             embedding.weight.data.uniform_(-initrange, initrange)
+        self.compact_attention.init_weights(initrange)
         self.HitsLinear.weight.data.uniform_(-initrange, initrange)
         self.HitsLinear.bias.data.zero_()
         self.VelocitiesLinear.bias.data.zero_()
@@ -116,7 +180,8 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         self.OffsetsLinear.bias.data.zero_()
         self.OffsetsLinear.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, hvo, encoding_control_tokens):
+    @torch.jit.export
+    def forward(self, hvo: torch.Tensor, encoding_control_tokens: torch.Tensor):
         '''
         :param hvo: shape (batch, max_len, 3)
         :param encoding_control_tokens: tensor of shape (batch, n_controls)
@@ -136,20 +201,28 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
 
         # Process control tokens
         prepended_embeddings: List[torch.Tensor] = []
+        compact_attention_embeddings: List[torch.Tensor] = []
 
         for i, embedding in enumerate(self.control_embeddings):
             token = encoding_control_tokens[:, i]  # (batch,)
-            mode = self.encoding_control_modes[i].item()  # 0=prepend, 1=add
+            mode = self.encoding_control_modes[i].item()  # 0=prepend, 1=add, 2=compact_attention
 
             control_embedding = embedding(token)
 
             if mode == 0:  # prepend
                 # control_embedding shape: (batch, d_model)
                 prepended_embeddings.append(control_embedding.unsqueeze(1))  # (batch, 1, d_model)
-            else:  # add (mode == 1)
+            elif mode == 1:  # add
                 # Reshape and add to HVO projection
                 control_reshaped = control_embedding.view(-1, self.max_len, self.d_model)
                 hvo_projection = hvo_projection + control_reshaped
+            elif mode == 2:  # compact_attention
+                # Store for compact attention application
+                compact_attention_embeddings.append(control_embedding)
+
+        # Apply compact attention if we have compact attention controls
+        if len(compact_attention_embeddings) > 0:
+            hvo_projection = self.compact_attention(hvo_projection, compact_attention_embeddings)
 
         # Combine prepended tokens with HVO projection
         if len(prepended_embeddings) > 0:
@@ -183,7 +256,7 @@ class Encoder(torch.nn.Module):
             num_layers=num_encoder_layers,
             norm=norm_encoder)
 
-    def forward(self, src):
+    def forward(self, src: torch.Tensor):
         """
         input and output both have shape (batch, seq_len, embed_dim)
         :param src:
@@ -268,16 +341,15 @@ class SingleFeatureOutputLayer(torch.nn.Module):
         self.Linear.bias.data.fill_(0.5)
         self.Linear.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, decoder_out):
+    def forward(self, decoder_out: torch.Tensor):
         logits = self.Linear(decoder_out)
-
         return logits
 
 
 class TensorBasedDecoderInput(torch.nn.Module):
     """ TorchScript-compatible decoder input using tensors instead of lists.
 
-    Control modes: 0 = prepend, 1 = add
+    Control modes: 0 = prepend, 1 = add, 2 = compact_attention
     """
 
     def __init__(self, max_len, latent_dim, d_model,
@@ -289,8 +361,9 @@ class TensorBasedDecoderInput(torch.nn.Module):
         self.d_model = d_model
         self.n_controls = len(n_decoding_control_tokens)
 
-        # Convert modes to integers and store as buffer (0=prepend, 1=add)
-        mode_ints = [0 if mode == 'prepend' else 1 for mode in decoding_control_modes]
+        # Convert modes to integers and store as buffer (0=prepend, 1=add, 2=compact_attention)
+        mode_mapping = {'prepend': 0, 'add': 1, 'compact_attention': 2}
+        mode_ints = [mode_mapping[mode] for mode in decoding_control_modes]
         self.register_buffer('decoding_control_modes', torch.tensor(mode_ints, dtype=torch.long))
 
         # Count prepended controls
@@ -305,7 +378,15 @@ class TensorBasedDecoderInput(torch.nn.Module):
             elif mode == 'add':
                 # Original behavior: embeddings output latent_dim for summation
                 embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=latent_dim)
+            elif mode == 'compact_attention':
+                # Compact attention mode: embeddings output d_model dimensions
+                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
+            else:
+                raise ValueError(f"Unknown decoding control mode: {mode}")
             self.control_embeddings.append(embedding)
+
+        # Add compact attention module
+        self.compact_attention = CompactControlAttention(d_model)
 
         self.fc = torch.nn.Linear(int(latent_dim), int(max_len * d_model))
         self.reLU = torch.nn.ReLU()
@@ -313,6 +394,7 @@ class TensorBasedDecoderInput(torch.nn.Module):
     def init_weights(self, initrange=0.1):
         self.fc.bias.data.zero_()
         self.fc.weight.data.uniform_(-initrange, initrange)
+        self.compact_attention.init_weights(initrange)
         for embedding in self.control_embeddings:
             embedding.weight.data.uniform_(-initrange, initrange)
 
@@ -327,27 +409,36 @@ class TensorBasedDecoderInput(torch.nn.Module):
         :return:
                 when all controls are 'add': (batch, max_len, d_model_dec)
                 when some/all controls are 'prepend': (batch, max_len + num_prepended_controls, d_model_dec)
+                when compact_attention: affects the sequence through attention
         """
         # Start with latent_z
         latent_modified = latent_z
         prepended_embeddings: List[torch.Tensor] = []
+        compact_attention_embeddings: List[torch.Tensor] = []
 
         # Process each control token
         for i, embedding in enumerate(self.control_embeddings):
             token = decoding_control_tokens[:, i]  # (batch,)
-            mode = self.decoding_control_modes[i].item()  # 0=prepend, 1=add
+            mode = self.decoding_control_modes[i].item()  # 0=prepend, 1=add, 2=compact_attention
 
             control_embedding = embedding(token)
 
             if mode == 0:  # prepend
                 # control_embedding shape: (batch, d_model)
                 prepended_embeddings.append(control_embedding.unsqueeze(1))  # (batch, 1, d_model)
-            else:  # add (mode == 1)
+            elif mode == 1:  # add
                 # For add mode, add to latent_z
                 latent_modified = latent_modified + control_embedding
+            elif mode == 2:  # compact_attention
+                # Store for compact attention application
+                compact_attention_embeddings.append(control_embedding)
 
         # Project modified latent and reshape to (batch, max_len, d_model)
         latent_projected = self.reLU(self.fc.forward(latent_modified)).view(-1, self.max_len, self.d_model)
+
+        # Apply compact attention if we have compact attention controls
+        if len(compact_attention_embeddings) > 0:
+            latent_projected = self.compact_attention(latent_projected, compact_attention_embeddings)
 
         # Combine prepended controls with projected latent
         if len(prepended_embeddings) > 0:
