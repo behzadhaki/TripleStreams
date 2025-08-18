@@ -359,7 +359,7 @@ if __name__ == "__main__":
     # LMD DATASETS
     print("\n\n\n\n\nCompiling dataset: LMD Top Four Dataset...")
     print("-"*80)
-    data_dir = "data/triple_streams/split_2bars/lmd_top_four"  # "data/triple_streams/split_2bars/lmd or rest"
+    data_dir = "split_2bars/lmd_top_four"  # "data/triple_streams/split_2bars/lmd or rest"
     dataset_pkls = sorted([f for f in os.listdir(data_dir) if f.endswith('.pkl.bz2')])
     compile_data_for_multiple_datasets_pkl(data_dir, dataset_pkls, accent_v_thresh=accent_v_thresh)
     print("\n\n\n √√√√√√√√√ Finished compiling dataset: LMD Top Four Dataset")
