@@ -14,7 +14,7 @@ wandb_project: "FlexControlTripleStreamsVAE_newRuns"
 # Dataset Settings
 # ===================================================================================
 
-start_shuffle_on_epoch: 1.0                            # Start shuffling from epoch 1
+start_shuffle_on_epoch: 0.0                            # Start shuffling from epoch 1
 
 dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 
