@@ -140,7 +140,7 @@ piano_roll_samples: true
 
 # Model saving
 save_model: true
-save_model_frequency_epoch_pct: 40.0                     # Save model every 40% = every 0.4 epochs
+save_model_frequency_epoch_pct: 100.0                     # Save model every 100% = every epoch
 save_model_dir: "misc/FlexControlTripleStreamsVAE"
 
 # Testing
