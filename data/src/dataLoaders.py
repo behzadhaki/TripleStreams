@@ -806,7 +806,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     print(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
                 for k, v in loaded_data_dictionary.items():
                     loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
-                features = {k: v[sampled_indices] for k, v in features.items() if k in loaded_data_dictionary}
+                features = {k: [v[i] for i in sampled_indices] for k, v in features.items()}
 
             # Populate already available fields
             # ------------------------------------------------------------------------------------------
@@ -832,7 +832,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 if key in features:
                     control_array = np.round(features[key], 5)
                 else:
-                    raise KeyError(f"Encoding control key '{key}' not found in data")
+                    raise KeyError(f"Encoding control key '{key}' not found in data - available keys: {list(features.keys())}")
 
                 encoding_control_values_list.append(control_array)
                 tokens = TokenizeControls(
@@ -856,7 +856,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 if key in features:
                     control_array = np.round(features[key], 5)
                 else:
-                    raise KeyError(f"Decoding control key '{key}' not found in data")
+                    raise KeyError(f"Decoding control key '{key}' not found in data - available keys: {list(features.keys())}")
 
                 decoding_control_values_list.append(control_array)
                 tokens = TokenizeControls(
@@ -1186,7 +1186,7 @@ if __name__ == "__main__":
         config=config,
         subset_tag="train",
         use_cached=True,
-        downsampled_size=None,
+        downsampled_size=1000,
         force_regenerate=False,
         move_all_to_cuda=False,
         print_logs=True
