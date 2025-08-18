@@ -787,9 +787,19 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
 
             if "Structural Similarity Distance" not in loaded_data_dictionary:
                 # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
-                flat_in_vels = np.array(loaded_data_dictionary["input_hvos"])[:, :, 1]
-                flat_out_vels = np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 1]
-                features.update({"Structural Similarity Distance":  ((((flat_in_vels - flat_out_vels)**2).sum(axis=-1))**0.5).tolist()})
+                flat_in_vels = np.clip(np.array(loaded_data_dictionary["input_hvos"])[:, :, 1], 0, 1)
+                flat_out_vels = np.clip(np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 1], 0, 1)
+                features.update({"Structural Similarity Distance": np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)) / 5.6568, 0, 1)})
+
+            if "Output Step Density" not in loaded_data_dictionary:
+                # total onsets divided by the number of steps with at least one onset
+                flat_out_hits = np.clip(np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 0], 0, 1)
+                steps_with_at_least_one_onset = flat_out_hits.sum(axis=-1)
+                steps_with_at_least_one_onset[steps_with_at_least_one_onset == 0] = 1  # avoid division by zero
+
+                total_out_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, :3], axis=-1).sum(axis=-1)
+                print(steps_with_at_least_one_onset.min(), total_out_hits.max())
+                features.update({"Output Step Density": (total_out_hits / steps_with_at_least_one_onset / 3.0).tolist()})
 
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
@@ -1164,7 +1174,47 @@ if __name__ == "__main__":
         'dataset_root_path': "data/triple_streams/model_ready/AccentAt0.75/",
         'max_len': 32,
         'dataset_files':
-            ["01_candombe_four_voices.pkl.bz2"],
+        [
+            "01_candombe_four_voices.pkl.bz2",
+            "02_elbg_both_flattened_left_right.pkl.bz2",
+            # "03_groove_midi_crash_hhclosed_hhopen_ride.pkl.bz2",
+            # "04_groove_midi_hh_kick_snare_toms.pkl.bz2",
+            # "05_groove_midi_hi_lo_mid_ride.pkl.bz2",
+            # "06_lmd_bass_brass_drum_percussion.pkl.bz2",
+            # "07_lmd_bass_brass_drum_percussive.pkl.bz2",
+            # "08_lmd_bass_brass_guitar_percussion.pkl.bz2",
+            # "09_lmd_bass_brass_guitar_percussive.pkl.bz2",
+            # "10_lmd_bass_brass_guitar_piano.pkl.bz2",
+            # "11_lmd_bass_brass_percussion_percussive.pkl.bz2",
+            # "12_lmd_bass_brass_percussion_piano.pkl.bz2",
+            # "13_lmd_bass_brass_percussive_piano.pkl.bz2",
+            # "14_lmd_bass_drum_guitar_percussion.pkl.bz2",
+            # "15_lmd_bass_drum_guitar_percussive.pkl.bz2",
+            # "16_lmd_bass_drum_percussion_percussive.pkl.bz2",
+            # "17_lmd_bass_drum_percussion_piano.pkl.bz2",
+            # "18_lmd_bass_drum_percussive_piano.pkl.bz2",
+            # "19_lmd_bass_guitar_percussion_percussive.pkl.bz2",
+            # "20_lmd_bass_guitar_percussion_piano.pkl.bz2",
+            # "21_lmd_bass_guitar_percussive_piano.pkl.bz2",
+            # "22_lmd_bass_percussion_percussive_piano.pkl.bz2",
+            # "23_lmd_brass_drum_guitar_percussion.pkl.bz2",
+            # "24_lmd_brass_drum_guitar_percussive.pkl.bz2",
+            # "25_lmd_brass_drum_guitar_piano.pkl.bz2",
+            # "26_lmd_brass_drum_percussion_percussive.pkl.bz2",
+            # "27_lmd_brass_drum_percussion_piano.pkl.bz2",
+            # "28_lmd_brass_drum_percussive_piano.pkl.bz2",
+            # "29_lmd_brass_guitar_percussion_percussive.pkl.bz2",
+            # "30_lmd_brass_guitar_percussion_piano.pkl.bz2",
+            # "31_lmd_brass_guitar_percussive_piano.pkl.bz2",
+            # "32_lmd_brass_percussion_percussive_piano.pkl.bz2",
+            # "33_lmd_drum_guitar_percussion_percussive.pkl.bz2",
+            # "34_lmd_drum_guitar_percussion_piano.pkl.bz2",
+            # "35_lmd_drum_guitar_percussive_piano.pkl.bz2",
+            # "36_lmd_drum_percussion_percussive_piano.pkl.bz2",
+            # "37_lmd_guitar_percussion_percussive_piano.pkl.bz2",
+            # "38_ttd_both-is-and_both_flattened_left_right.pkl.bz2",
+            # "39_ttd_both-is-or_both_flattened_left_right.pkl.bz2",
+        ],
 
         # Encoding Controls (converted from legacy encoding_control1/2)
         'n_encoding_control_tokens': [33, 5],  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
@@ -1178,7 +1228,7 @@ if __name__ == "__main__":
         'decoding_control_modes': ['prepend', 'prepend', 'prepend', 'prepend'],  # All prepended (legacy behavior)
         'decoding_control_keys':
             ["Total Out Hits",
-            "Stream 1 Relative Density",
+            "Output Step Density",
              "Stream 2 Relative Density",
              "Stream 3 Relative Density"]
     }
@@ -1186,28 +1236,20 @@ if __name__ == "__main__":
         config=config,
         subset_tag="train",
         use_cached=True,
-        downsampled_size=1000,
+        downsampled_size=None,
         force_regenerate=False,
         move_all_to_cuda=False,
         print_logs=True
     )
 
-    flex_loader = DataLoader(
-        flex_dataset,
-        batch_size=4,
-        shuffle=False,
-        num_workers=0,  # <—
-        drop_last=False
-    )
+    # Stuctural Similarity Values
+    structural_similarity_values = flex_dataset.encoding_control_values[:, 0]
+    # get index of inf values
 
-    for batch in flex_loader:
-        for item in batch[:-2]:
-            print(item.device)
-        break
+    inf_indices = np.where(np.isinf(structural_similarity_values))[0]
+    structural_similarity_values.min(), structural_similarity_values.max(), len(inf_indices)
 
-    # Check if the dataset is loaded correctly
-    print(f"Loaded FlexControl dataset with {len(flex_dataset)} samples")
-    print(f"Input grooves shape: {flex_dataset.input_grooves.shape}")
-    print(f"Output streams shape: {flex_dataset.output_streams.shape}")
-    print(f"Encoding control tokens shape: {flex_dataset.encoding_control_tokens.shape}")
-    print(f"Decoding control tokens shape: {flex_dataset.decoding_control_tokens.shape}")
+    # Onset Coincidence Rate
+    output_step_density = flex_dataset.decoding_control_values[:, 1]
+    inf_indices = np.where(np.isinf(output_step_density))[0]
+    output_step_density.min(), output_step_density.max(), len(inf_indices)
