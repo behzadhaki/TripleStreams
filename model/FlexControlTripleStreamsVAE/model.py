@@ -69,7 +69,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
             "Number of decoding control tokens must match number of decoding control modes"
 
         # Validate control modes
-        valid_modes = {'prepend', 'add', 'compact_attention'}
+        valid_modes = {'prepend', 'add', 'compact_attention', 'self_attention'}
         for mode in self.encoding_control_modes + self.decoding_control_modes:
             assert mode in valid_modes, f"Invalid control mode: {mode}. Must be one of {valid_modes}"
 
@@ -621,23 +621,40 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
     # serializes to a torchscript model
     @torch.jit.ignore
     def serialize(self, save_folder, filename=None):
-
         os.makedirs(save_folder, exist_ok=True)
 
         if filename is None:
             import datetime
             filename = f'TripleStreams_v2.1_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
+
         is_train = self.training
         self.eval()
+
+        # Ensure the save path is a file, not a directory
         save_path = os.path.join(save_folder, filename)
 
+        # Check if the path exists and is a directory
+        if os.path.exists(save_path) and os.path.isdir(save_path):
+            # If it's a directory, remove it or use a different filename
+            import shutil
+            shutil.rmtree(save_path)
+            print(f"⚠️  Removed existing directory: {save_path}")
+
         scr = torch.jit.script(self)
-        # save model
-        with open(save_path, "wb") as f:
-            torch.jit.save(scr, f)
+
+        # Save model
+        try:
+            with open(save_path, "wb") as f:
+                torch.jit.save(scr, f)
+            print(f"✅ TorchScript model saved to: {save_path}")
+        except Exception as e:
+            print(f"❌ Failed to save TorchScript model: {e}")
+            raise
 
         if is_train:
             self.train()
+
+        return save_path
 
     @torch.jit.export
     def get_latent_dim(self):
@@ -801,7 +818,112 @@ if __name__ == "__main__":
     print(f"   hvo shape: {hvo.shape}")
     print(f"   latent_z shape: {latent_z.shape}")
 
-    # Test all-continuous configuration
+    print(f"\n🧠 Testing self_attention mode...")
+    config_self_attention = config.copy()
+    config_self_attention.update({
+        'n_encoding_control_tokens': [13, None, 10],  # discrete, continuous, discrete
+        'encoding_control_modes': ['self_attention', 'self_attention', 'prepend'],  # First two use self-attention
+        'n_decoding_control_tokens': [None, None, 10, None],  # continuous, continuous, discrete, continuous
+        'decoding_control_modes': ['self_attention', 'self_attention', 'add', 'compact_attention']
+    })
+
+    # Control tokens for self-attention test
+    encoding_self_attn = torch.tensor([
+        [5.0, 0.7, 2.0],  # discrete=5, continuous=0.7, discrete=2
+        [8.0, 0.3, 7.0]  # discrete=8, continuous=0.3, discrete=7
+    ], dtype=torch.float32)
+
+    decoding_self_attn = torch.tensor([
+        [0.4, 0.8, 3.0, 0.6],  # continuous, continuous, discrete=3, continuous
+        [0.1, 0.9, 6.0, 0.2]  # continuous, continuous, discrete=6, continuous
+    ], dtype=torch.float32)
+
+    model_self_attention = FlexControlTripleStreamsVAE(config_self_attention)
+    print(f"✅ Self-attention model created:")
+    print(f"   Encoding modes: {model_self_attention.encoding_control_modes}")
+    print(f"   Decoding modes: {model_self_attention.decoding_control_modes}")
+    print(f"   Encoding self-attention controls: {model_self_attention.InputLayerEncoder.n_self_attention_controls}")
+    print(f"   Decoding self-attention controls: {model_self_attention.HitsDecoderInput.n_self_attention_controls}")
+
+    try:
+        hvo_self_attn, latent_self_attn = model_self_attention.predict(
+            flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+            encoding_control_tokens=encoding_self_attn,
+            decoding_control_tokens=decoding_self_attn
+        )
+        print(f"✅ Self-attention prediction successful: {hvo_self_attn.shape}")
+        print(f"   - Controls can now learn inter-dependencies!")
+        print(f"   - Control correlations will be learned through self-attention")
+        print(f"   - Example: if tempo=slow, complexity might be automatically adjusted")
+    except Exception as e:
+        print(f"❌ Self-attention test failed: {e}")
+
+    # Test all-self-attention configuration
+    print(f"\n🧠 Testing all-self-attention configuration...")
+    config_all_self_attn = config.copy()
+    config_all_self_attn.update({
+        'n_encoding_control_tokens': [13, None],  # discrete, continuous
+        'encoding_control_modes': ['self_attention', 'self_attention'],  # All self-attention
+        'n_decoding_control_tokens': [None, 10, None],  # continuous, discrete, continuous
+        'decoding_control_modes': ['self_attention', 'self_attention', 'self_attention']  # All self-attention
+    })
+
+    encoding_all_self_attn = torch.tensor([
+        [1.0, 0.7],
+        [5.0, 0.3]
+    ], dtype=torch.float32)
+
+    decoding_all_self_attn = torch.tensor([
+        [0.8, 2.0, 0.1],
+        [0.4, 7.0, 0.9]
+    ], dtype=torch.float32)
+
+    try:
+        model_all_self_attn = FlexControlTripleStreamsVAE(config_all_self_attn)
+        hvo_all_self_attn, _ = model_all_self_attn.predict(
+            flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+            encoding_control_tokens=encoding_all_self_attn,
+            decoding_control_tokens=decoding_all_self_attn
+        )
+        print(f"✅ All-self-attention prediction successful: {hvo_all_self_attn.shape}")
+        print(f"   - Maximum control inter-dependency learning!")
+    except Exception as e:
+        print(f"❌ All-self-attention test failed: {e}")
+
+    # Test mixed modes including self_attention
+    print(f"\n🎭 Testing mixed modes with self_attention...")
+    config_mixed_with_self_attn = config.copy()
+    config_mixed_with_self_attn.update({
+        'n_encoding_control_tokens': [13, None, 10, None],  # discrete, continuous, discrete, continuous
+        'encoding_control_modes': ['prepend', 'self_attention', 'self_attention', 'compact_attention'],
+        'n_decoding_control_tokens': [None, 10, None, 8],  # continuous, discrete, continuous, discrete
+        'decoding_control_modes': ['self_attention', 'add', 'self_attention', 'prepend']
+    })
+
+    encoding_mixed_self_attn = torch.tensor([
+        [1.0, 0.7, 5.0, 0.3],
+        [8.0, 0.2, 2.0, 0.8]
+    ], dtype=torch.float32)
+
+    decoding_mixed_self_attn = torch.tensor([
+        [0.4, 3.0, 0.6, 2.0],
+        [0.9, 7.0, 0.1, 5.0]
+    ], dtype=torch.float32)
+
+    try:
+        model_mixed_self_attn = FlexControlTripleStreamsVAE(config_mixed_with_self_attn)
+        hvo_mixed_self_attn, _ = model_mixed_self_attn.predict(
+            flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+            encoding_control_tokens=encoding_mixed_self_attn,
+            decoding_control_tokens=decoding_mixed_self_attn
+        )
+        print(f"✅ Mixed modes with self-attention successful: {hvo_mixed_self_attn.shape}")
+        print(f"   - Combines all control modes: prepend, add, compact_attention, self_attention")
+        print(f"   - Self-attention controls learn dependencies, others provide direct influence")
+    except Exception as e:
+        print(f"❌ Mixed modes with self-attention failed: {e}")
+
+    # Test all-continuous configuration (backward compatibility)
     print("\n🌊 Testing all-continuous configuration...")
     config_all_continuous = config.copy()
     config_all_continuous.update({
@@ -934,17 +1056,20 @@ if __name__ == "__main__":
 
     print(f"\n🎉 All tests completed successfully!")
 
-    print(f"\n📋 Summary of new features:")
+    print(f"\n📋 Summary of features:")
     print(f"  ✅ Added support for continuous controls (n_tokens=None)")
     print(f"  ✅ Continuous controls use linear projections instead of embeddings")
     print(f"  ✅ Mixed discrete/continuous configurations supported")
+    print(f"  ✅ NEW: Added 'self_attention' control mode for learning inter-dependencies")
+    print(f"  ✅ Control self-attention learns correlations between controls")
     print(f"  ✅ Backward compatible with existing discrete-only models")
     print(f"  ✅ Enhanced save/load with embedded configs")
     print(f"  ✅ TorchScript compatible")
     print(f"  ✅ All control modes work with both discrete and continuous controls:")
-    print(f"      - 'prepend': adds control tokens to sequence start")
+    print(f"      - 'prepend': adds control tokens to sequxence start")
     print(f"      - 'add': adds control influence to latent space or sequence")
     print(f"      - 'compact_attention': applies attention-based control influence")
+    print(f"      - 'self_attention': learns inter-dependencies between controls")
 
     print(f"\n🔧 Usage examples:")
     print(f"  # Discrete control (embedding-based):")
@@ -955,6 +1080,10 @@ if __name__ == "__main__":
     print(f"  ")
     print(f"  # Mixed discrete and continuous:")
     print(f"  'n_encoding_control_tokens': [13, None, 10]  # discrete, continuous, discrete")
+    print(f"  ")
+    print(f"  # Control modes with self-attention:")
+    print(f"  'encoding_control_modes': ['self_attention', 'self_attention', 'prepend']")
+    print(f"  # First two controls learn inter-dependencies, third is prepended")
 
     # Clean up generated files
     try:
@@ -962,3 +1091,6 @@ if __name__ == "__main__":
             os.remove('./triplestreams_vae_continuous_v2.1.pt')
     except:
         pass
+
+    model.save('./triplestreams_vae_continuous_v2.1.pth')
+    FlexControlTripleStreamsVAE.load('./triplestreams_vae_continuous_v2.1.pth')
