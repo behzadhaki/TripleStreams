@@ -211,7 +211,7 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         self.control_projections = torch.nn.ModuleList()
 
         for i, (n_tokens, mode) in enumerate(zip(n_encoding_control_tokens, encoding_control_modes)):
-            if n_tokens is not None:  # Discrete control
+            if n_tokens is not None or n_tokens != 'none' or n_tokens!="None":  # Discrete control
                 if mode in ['prepend', 'compact_attention', 'self_attention']:
                     # These modes need d_model dimensions
                     embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
@@ -530,7 +530,7 @@ class TensorBasedDecoderInput(torch.nn.Module):
         self.control_projections = torch.nn.ModuleList()
 
         for i, (n_tokens, mode) in enumerate(zip(n_decoding_control_tokens, decoding_control_modes)):
-            if n_tokens is not None:  # Discrete control
+            if n_tokens is not None or n_tokens != 'none' or n_tokens!="None":  # Discrete control
                 if mode == 'prepend':
                     # Control embeddings output d_model dimensions for prepending
                     embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
