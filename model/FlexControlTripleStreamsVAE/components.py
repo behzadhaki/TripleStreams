@@ -136,7 +136,13 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         self.register_buffer('encoding_control_modes', torch.tensor(mode_ints, dtype=torch.long))
 
         # Store control types (True for discrete, False for continuous)
-        control_types = [n_tokens is not None for n_tokens in n_encoding_control_tokens]
+        # Handle both None and string 'None' for continuous controls
+        def is_discrete_control(n_tokens):
+            if n_tokens is None or n_tokens == 'None' or n_tokens == 'none':
+                return False
+            return True
+
+        control_types = [is_discrete_control(n_tokens) for n_tokens in n_encoding_control_tokens]
         self.register_buffer('control_is_discrete', torch.tensor(control_types, dtype=torch.bool))
 
         # Count prepended controls
@@ -147,7 +153,7 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         self.control_projections = torch.nn.ModuleList()
 
         for i, (n_tokens, mode) in enumerate(zip(n_encoding_control_tokens, encoding_control_modes)):
-            if n_tokens is not None:  # Discrete control
+            if is_discrete_control(n_tokens):  # Discrete control
                 if mode == 'prepend':
                     # Prepend mode: embedding outputs d_model dimensions
                     embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
@@ -161,7 +167,7 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
                     raise ValueError(f"Unknown encoding control mode: {mode}")
                 self.control_embeddings.append(embedding)
                 self.control_projections.append(torch.nn.Identity())  # Placeholder for discrete controls
-            else:  # Continuous control
+            else:  # Continuous control (n_tokens is None, 'None', or 'none')
                 self.control_embeddings.append(torch.nn.Identity())  # Placeholder for continuous controls
                 if mode == 'prepend':
                     # Project continuous value to d_model dimensions
@@ -411,7 +417,13 @@ class TensorBasedDecoderInput(torch.nn.Module):
         self.register_buffer('decoding_control_modes', torch.tensor(mode_ints, dtype=torch.long))
 
         # Store control types (True for discrete, False for continuous)
-        control_types = [n_tokens is not None for n_tokens in n_decoding_control_tokens]
+        # Handle both None and string 'None' for continuous controls
+        def is_discrete_control(n_tokens):
+            if n_tokens is None or n_tokens == 'None' or n_tokens == 'none':
+                return False
+            return True
+
+        control_types = [is_discrete_control(n_tokens) for n_tokens in n_decoding_control_tokens]
         self.register_buffer('control_is_discrete', torch.tensor(control_types, dtype=torch.bool))
 
         # Count prepended controls
@@ -422,7 +434,7 @@ class TensorBasedDecoderInput(torch.nn.Module):
         self.control_projections = torch.nn.ModuleList()
 
         for i, (n_tokens, mode) in enumerate(zip(n_decoding_control_tokens, decoding_control_modes)):
-            if n_tokens is not None:  # Discrete control
+            if is_discrete_control(n_tokens):  # Discrete control
                 if mode == 'prepend':
                     # Control embeddings output d_model dimensions for prepending
                     embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
@@ -436,7 +448,7 @@ class TensorBasedDecoderInput(torch.nn.Module):
                     raise ValueError(f"Unknown decoding control mode: {mode}")
                 self.control_embeddings.append(embedding)
                 self.control_projections.append(torch.nn.Identity())  # Placeholder for discrete controls
-            else:  # Continuous control
+            else:  # Continuous control (n_tokens is None, 'None', or 'none')
                 self.control_embeddings.append(torch.nn.Identity())  # Placeholder for continuous controls
                 if mode == 'prepend':
                     # Project continuous value to d_model dimensions
