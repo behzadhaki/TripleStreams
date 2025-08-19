@@ -789,7 +789,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
                 flat_in_vels = np.clip(np.array(loaded_data_dictionary["input_hvos"])[:, :, 1], 0, 1)
                 flat_out_vels = np.clip(np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 1], 0, 1)
-                features.update({"Structural Similarity Distance": np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)) / 5.6568, 0, 1)})
+                features.update({"Structural Similarity Distance": np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)), 0, 10)})
 
             if "Output Step Density" not in loaded_data_dictionary:
                 # total onsets divided by the number of steps with at least one onset
@@ -798,8 +798,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 steps_with_at_least_one_onset[steps_with_at_least_one_onset == 0] = 1  # avoid division by zero
 
                 total_out_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, :3], axis=-1).sum(axis=-1)
-                print(steps_with_at_least_one_onset.min(), total_out_hits.max())
-                features.update({"Output Step Density": (total_out_hits / steps_with_at_least_one_onset / 3.0).tolist()})
+                features.update({"Output Step Density": (total_out_hits / steps_with_at_least_one_onset).tolist()})
 
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
@@ -834,25 +833,60 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             n_encoding_controls = len(self.encoding_control_keys)
             n_decoding_controls = len(self.decoding_control_keys)
 
+
+            def tokenize(features, key):
+                if key == "Flat Out Vs. Input | Hits | Hamming":
+                    low = 0.0
+                    high = 32.0
+                    control_array = np.round(features[key], 5)
+                elif (key == "Flat Out Vs. Input | Accent | Hamming" or
+                      key == "Stream 1 Vs. Flat Out | Hits | Hamming" or
+                      key == "Stream 2 Vs. Flat Out | Hits | Hamming" or
+                      key == "Stream 3 Vs. Flat Out | Hits | Hamming"):
+                    low = 0.0
+                    high = 0.85
+                    control_array = np.round(features[key], 5)
+                elif key == "Relative Density":
+                    low = 0.0
+                    high = 1.0
+                    control_array = np.round(features[key], 5)
+                elif key == "Structural Similarity Distance":
+                    low = 0.0
+                    high = 1.0
+                    control_array = (np.round(features[key], 5) / 5.6568)
+                elif key == "Total Out Hits":
+                    low = 0.0
+                    high = 96.0
+                    control_array = np.round(features[key], 5)
+                elif key == "Output Step Density":
+                    low = 0.0
+                    high = 1.0
+                    control_array = np.round(features[key], 5) / 3.0
+                elif (key == "Stream 1 Relative Density" or
+                      key == "Stream 2 Relative Density" or
+                      key == "Stream 3 Relative Density"):
+                    low = 0.0
+                    high = 1.0
+                    control_array = np.round(features[key], 5)
+                else:
+                    available_keys = '\n'.join(features.keys())
+                    raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
+
+                tokens = TokenizeControls(
+                    control_array=control_array,
+                    n_bins=n_tokens,
+                    low=low,
+                    high=high
+                )
+                return tokens, control_array
+
             # Create encoding control tokens tensor
             encoding_control_values_list = []
             encoding_tokens_list = []
             for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
-                # control array may either be in features or loaded_data_dictionary
-                if key in features:
-                    control_array = np.round(features[key], 5)
-                else:
-                    raise KeyError(f"Encoding control key '{key}' not found in data - available keys: {list(features.keys())}")
-
-                encoding_control_values_list.append(control_array)
-                tokens = TokenizeControls(
-                    control_array=control_array,
-                    n_bins=n_tokens,
-                    low=0,
-                    high=control_array.max()
-                )
+                tokens, control_array = tokenize(features, key)
                 encoding_tokens_list.append(tokens)
-
+                encoding_control_values_list.append(control_array)
             # Stack encoding tokens: shape (n_samples, n_encoding_controls)
             self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
             self.encoding_control_tokens = np.stack(encoding_tokens_list,
@@ -862,21 +896,9 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             decoding_control_values_list = []
             decoding_tokens_list = []
             for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
-                # control array may either be in features or loaded_data_dictionary
-                if key in features:
-                    control_array = np.round(features[key], 5)
-                else:
-                    raise KeyError(f"Decoding control key '{key}' not found in data - available keys: {list(features.keys())}")
-
-                decoding_control_values_list.append(control_array)
-                tokens = TokenizeControls(
-                    control_array=control_array,
-                    n_bins=n_tokens,
-                    low=0,
-                    high=control_array.max()
-                )
+                tokens, control_array = tokenize(features, key)
                 decoding_tokens_list.append(tokens)
-
+                decoding_control_values_list.append(control_array)
             # Stack decoding tokens: shape (n_samples, n_decoding_controls)
             self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
             self.decoding_control_tokens = np.stack(decoding_tokens_list,
@@ -917,10 +939,23 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             invalid_sample_ix = set(h_invalid_sample_ix).union(set(v_invalid_sample_ix)).union(set(o_invalid_sample_ix))
             return invalid_sample_ix
 
+        def get_empty_indices(hvo):
+            # Check for empty samples (all zeros)
+            n_voices = hvo.shape[-1] // 3
+            empty_indices = np.where(np.all(hvo[:, :, :n_voices] == 0, axis=(1, 2)))[0]
+            return empty_indices
+
         invalid_indices_input = get_invalid_indices(self.input_grooves)
         invalid_indices_output = get_invalid_indices(self.output_streams)
         all_invalid_indices = set(invalid_indices_input).union(set(invalid_indices_output))
-        
+        empty_output_indices = set(get_empty_indices(self.output_streams))
+        # keep only 99% of empty output indices
+        if len(empty_output_indices) > 0:
+            empty_output_indices = set(np.random.choice(list(empty_output_indices), int(len(empty_output_indices) * 0.99),
+                                                    replace=False).tolist())
+        # add empty output indices to invalid indices
+        all_invalid_indices = all_invalid_indices.union(empty_output_indices)
+
         # remove invalid samples
         if len(all_invalid_indices) > 0:
             if print_logs:
@@ -930,7 +965,9 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.output_streams = np.delete(self.output_streams, list(all_invalid_indices), axis=0)
             self.flat_output_streams = np.delete(self.flat_output_streams, list(all_invalid_indices), axis=0)
             self.encoding_control_tokens = np.delete(self.encoding_control_tokens, list(all_invalid_indices), axis=0)
+            self.encoding_control_values = np.delete(self.encoding_control_values, list(all_invalid_indices), axis=0)
             self.decoding_control_tokens = np.delete(self.decoding_control_tokens, list(all_invalid_indices), axis=0)
+            self.decoding_control_values = np.delete(self.decoding_control_values, list(all_invalid_indices), axis=0)
             self.metadata = [self.metadata[ix] for ix in range(len(self.metadata)) if ix not in all_invalid_indices]
             self.tempos = [self.tempos[ix] for ix in range(len(self.tempos)) if ix not in all_invalid_indices]
             self.collection = [self.collection[ix] for ix in range(len(self.collection)) if
@@ -1066,6 +1103,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         instance.decoding_control_tokens = decoding_control_tokens
         instance.encoding_control_values = encoding_control_values
         instance.decoding_control_values = decoding_control_values
+
         instance.metadata = metadata
         instance.tempos = tempos
         instance.collection = collection
