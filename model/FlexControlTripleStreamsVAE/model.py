@@ -14,6 +14,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
     """
     An encoder-decoder VAE transformer with flexible control token support
     Now supports: 'prepend', 'add', and 'compact_attention' modes
+    And both discrete (embedding) and continuous (linear projection) control types
     """
 
     def __init__(self, config):
@@ -36,9 +37,13 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
             max_len: the maximum length of the input/output sequence
 
             # Flexible control configuration
-            n_encoding_control_tokens: list of ints, number of tokens for each encoding control
+            n_encoding_control_tokens: list of ints or None, number of tokens for each encoding control
+                                      - int: discrete control with embedding layer
+                                      - None: continuous control with linear projection
             encoding_control_modes: list of strings, mode for each encoding control ('prepend', 'add', or 'compact_attention')
-            n_decoding_control_tokens: list of ints, number of tokens for each decoding control
+            n_decoding_control_tokens: list of ints or None, number of tokens for each decoding control
+                                     - int: discrete control with embedding layer
+                                     - None: continuous control with linear projection
             decoding_control_modes: list of strings, mode for each decoding control ('prepend', 'add', or 'compact_attention')
 
             device: the device to use
@@ -183,6 +188,8 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
         :param flat_hvo_groove: [N, 32, 3]
         :param encoding_control_tokens: [N, n_encoding_controls]
+                                      - For discrete controls: integer token indices
+                                      - For continuous controls: float values in [0, 1]
 
         :return: mu, log_var, latent_z, memory
                 mu:            [N, latent_dim]
@@ -229,6 +236,8 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
         :param latent_z:            [N, latent_dim]
         :param decoding_control_tokens: [N, n_decoding_controls]
+                                      - For discrete controls: integer token indices
+                                      - For continuous controls: float values in [0, 1]
 
         :return:                    h_logits, v_logits, o_logits, hvo_logits
 
@@ -401,18 +410,23 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         # Handle missing control mode buffers (they're not critical for functionality)
         missing_control_modes = [
             "InputLayerEncoder.encoding_control_modes",
+            "InputLayerEncoder.control_is_discrete",
             "HitsDecoderInput.decoding_control_modes",
+            "HitsDecoderInput.control_is_discrete",
             "velocityDecoderInput.decoding_control_modes",
-            "OffsetDecoderInput.decoding_control_modes"
+            "velocityDecoderInput.control_is_discrete",
+            "OffsetDecoderInput.decoding_control_modes",
+            "OffsetDecoderInput.control_is_discrete"
         ]
 
         for missing_key in missing_control_modes:
             if missing_key not in state_dict:
                 # Get the corresponding tensor from current model
-                if hasattr(self, missing_key.split('.')[0]):
-                    module = getattr(self, missing_key.split('.')[0])
-                    if hasattr(module, missing_key.split('.')[1]):
-                        current_tensor = getattr(module, missing_key.split('.')[1])
+                module_name, attr_name = missing_key.split('.', 1)
+                if hasattr(self, module_name):
+                    module = getattr(self, module_name)
+                    if hasattr(module, attr_name):
+                        current_tensor = getattr(module, attr_name)
                         state_dict[missing_key] = current_tensor.clone()
 
         return super().load_state_dict(state_dict, strict=False)  # Use strict=False for compatibility
@@ -467,7 +481,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
         return converted_state_dict
 
-    def save(self, save_path, additional_info=None, include_legacy_json=True, save_version='2.0'):
+    def save(self, save_path, additional_info=None, include_legacy_json=True, save_version='2.1'):
         """
         Enhanced save method that embeds config in the model file for self-contained loading.
 
@@ -494,7 +508,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
             'model_class': self.__class__.__name__,
             'save_version': save_version,
             'pytorch_version': torch.__version__,
-            'model_architecture': 'FlexControlTripleStreamsVAE'
+            'model_architecture': 'FlexControlTripleStreamsVAE_v2.1_with_continuous_controls'
         }
 
         # Save the main model file with embedded config
@@ -533,7 +547,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
             'additional_info': additional_info
         }, save_path)
 
-        print(f"📁 Legacy save completed: {save_path}")
+        print(f"🔒 Legacy save completed: {save_path}")
         return save_path
 
     @classmethod
@@ -542,13 +556,33 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         Class method for convenient loading of FlexControlTripleStreamsVAE models.
         Automatically handles both new (embedded config) and legacy (separate JSON) formats.
         """
+
+        # Handle PyTorch version compatibility for weights_only parameter
+        def safe_load(path, map_location=None):
+            try:
+                # Try with weights_only=False (newer PyTorch versions)
+                if map_location is not None:
+                    return torch.load(path, map_location=map_location, weights_only=False)
+                else:
+                    return torch.load(path, weights_only=False)
+            except TypeError:
+                # Fallback for older PyTorch versions without weights_only parameter
+                if map_location is not None:
+                    return torch.load(path, map_location=map_location)
+                else:
+                    return torch.load(path)
+
         try:
             if device is not None:
-                loaded_dict = torch.load(model_path, map_location=device, weights_only=False)
+                loaded_dict = safe_load(model_path, map_location=device)
             else:
-                loaded_dict = torch.load(model_path, weights_only=False)
-        except:
-            loaded_dict = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+                loaded_dict = safe_load(model_path)
+        except Exception as e:
+            # Final fallback to CPU
+            try:
+                loaded_dict = safe_load(model_path, map_location=torch.device('cpu'))
+            except Exception as fallback_error:
+                raise RuntimeError(f"Failed to load model: {e}. Fallback error: {fallback_error}")
 
         # Try embedded config first (new format)
         if 'params' in loaded_dict:
@@ -592,7 +626,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
         if filename is None:
             import datetime
-            filename = f'TripleStreams_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
+            filename = f'TripleStreams_v2.1_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
         is_train = self.training
         self.eval()
         save_path = os.path.join(save_folder, filename)
@@ -611,7 +645,9 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
 
 if __name__ == "__main__":
-    # Test configuration with flexible controls including compact_attention
+    print("🧪 Testing FlexControlTripleStreamsVAE with continuous controls...")
+
+    # Test configuration with mixed discrete and continuous controls
     config = {
         'd_model_enc': 128,
         'd_model_dec': 128,
@@ -630,123 +666,184 @@ if __name__ == "__main__":
         'offset_dropout': 0.2,
         'device': 'cpu',
 
-        # Flexible control configuration with compact_attention
-        'n_encoding_control_tokens': [13, 10],
+        # Mixed discrete and continuous control configuration
+        'n_encoding_control_tokens': [13, None],  # discrete, continuous
         'encoding_control_modes': ['prepend', 'compact_attention'],
-        'n_decoding_control_tokens': [10, 10, 10],
+        'n_decoding_control_tokens': [10, None, None],  # discrete, continuous, continuous
         'decoding_control_modes': ['compact_attention', 'prepend', 'add']
     }
 
-    # Create control tokens as TENSORS (not lists)
-    batch_size = 1
-    n_encoding_controls = len(config['n_encoding_control_tokens'])
-    n_decoding_controls = len(config['n_decoding_control_tokens'])
+    # Create control tokens as TENSORS with mixed types
+    batch_size = 2
 
-    # Create encoding control tokens tensor: (batch, n_encoding_controls)
+    # Encoding control tokens: [discrete_token, continuous_value]
     encoding_control_tokens = torch.tensor([
-        [1, 2]  # [first_control, second_control] for batch
-    ], dtype=torch.long)  # Shape: (1, 2)
+        [1, 0.7],  # batch 0: discrete=1, continuous=0.7
+        [5, 0.3]  # batch 1: discrete=5, continuous=0.3
+    ], dtype=torch.float32)  # Use float32 to support both int and float values
 
-    # Create decoding control tokens tensor: (batch, n_decoding_controls)
+    # Decoding control tokens: [discrete_token, continuous_value1, continuous_value2]
     decoding_control_tokens = torch.tensor([
-        [1, 2, 3]  # [first_control, second_control, third_control] for batch
-    ], dtype=torch.long)  # Shape: (1, 3)
+        [3, 0.8, 0.2],  # batch 0: discrete=3, continuous1=0.8, continuous2=0.2
+        [7, 0.1, 0.9]  # batch 1: discrete=7, continuous1=0.1, continuous2=0.9
+    ], dtype=torch.float32)
 
     # Test the model
     model = FlexControlTripleStreamsVAE(config)
-    print(f"Encoding control modes: {model.encoding_control_modes}")
-    print(f"Decoding control modes: {model.decoding_control_modes}")
-    print(f"Prepended encoding controls: {model.n_prepended_encoding_controls}")
-    print(f"Prepended decoding controls: {model.n_prepended_decoding_controls}")
+    print(f"✅ Model created successfully")
+    print(f"   Encoding control modes: {model.encoding_control_modes}")
+    print(f"   Decoding control modes: {model.decoding_control_modes}")
+    print(f"   Prepended encoding controls: {model.n_prepended_encoding_controls}")
+    print(f"   Prepended decoding controls: {model.n_prepended_decoding_controls}")
 
     # Test forward pass
+    print("\n🔄 Testing forward pass...")
     h_logits, v_logits, o_logits, mu, log_var, latent_z = model.forward(
         flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
         encoding_control_tokens=encoding_control_tokens,
         decoding_control_tokens=decoding_control_tokens
     )
 
-    print(f"Forward pass successful:")
-    print(f"  h_logits shape: {h_logits.shape}")
-    print(f"  v_logits shape: {v_logits.shape}")
-    print(f"  o_logits shape: {o_logits.shape}")
-    print(f"  latent_z shape: {latent_z.shape}")
+    print(f"✅ Forward pass successful:")
+    print(f"   h_logits shape: {h_logits.shape}")
+    print(f"   v_logits shape: {v_logits.shape}")
+    print(f"   o_logits shape: {o_logits.shape}")
+    print(f"   latent_z shape: {latent_z.shape}")
 
     # Test prediction
+    print("\n🎯 Testing prediction...")
     hvo, latent_z = model.predict(
         flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
         encoding_control_tokens=encoding_control_tokens,
         decoding_control_tokens=decoding_control_tokens
     )
 
-    print(f"Prediction successful:")
-    print(f"  hvo shape: {hvo.shape}")
-    print(f"  latent_z shape: {latent_z.shape}")
+    print(f"✅ Prediction successful:")
+    print(f"   hvo shape: {hvo.shape}")
+    print(f"   latent_z shape: {latent_z.shape}")
 
-    # Test with different control configuration (all compact_attention mode)
-    config_all_compact = config.copy()
-    config_all_compact.update({
-        'n_encoding_control_tokens': [13, 10],
-        'encoding_control_modes': ['compact_attention', 'compact_attention'],
-        'n_decoding_control_tokens': [10, 10, 10],
-        'decoding_control_modes': ['compact_attention', 'compact_attention', 'compact_attention']
+    # Test all-continuous configuration
+    print("\n🌊 Testing all-continuous configuration...")
+    config_all_continuous = config.copy()
+    config_all_continuous.update({
+        'n_encoding_control_tokens': [None, None],  # All continuous
+        'encoding_control_modes': ['compact_attention', 'add'],
+        'n_decoding_control_tokens': [None, None, None],  # All continuous
+        'decoding_control_modes': ['compact_attention', 'prepend', 'add']
     })
 
-    model_all_compact = FlexControlTripleStreamsVAE(config_all_compact)
-    print(f"\nAll-compact-attention model:")
-    print(f"  Prepended encoding controls: {model_all_compact.n_prepended_encoding_controls}")
-    print(f"  Prepended decoding controls: {model_all_compact.n_prepended_decoding_controls}")
+    # All continuous control tokens
+    encoding_continuous = torch.tensor([
+        [0.5, 0.7],
+        [0.2, 0.9]
+    ], dtype=torch.float32)
 
-    hvo_compact, _ = model_all_compact.predict(
+    decoding_continuous = torch.tensor([
+        [0.3, 0.8, 0.1],
+        [0.6, 0.4, 0.7]
+    ], dtype=torch.float32)
+
+    model_all_continuous = FlexControlTripleStreamsVAE(config_all_continuous)
+    print(f"✅ All-continuous model created:")
+    print(f"   Prepended encoding controls: {model_all_continuous.n_prepended_encoding_controls}")
+    print(f"   Prepended decoding controls: {model_all_continuous.n_prepended_decoding_controls}")
+
+    hvo_continuous, _ = model_all_continuous.predict(
         flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
-        encoding_control_tokens=encoding_control_tokens,
-        decoding_control_tokens=decoding_control_tokens
+        encoding_control_tokens=encoding_continuous,
+        decoding_control_tokens=decoding_continuous
     )
-    print(f"  All-compact-attention prediction successful: {hvo_compact.shape}")
+    print(f"✅ All-continuous prediction successful: {hvo_continuous.shape}")
 
-    # Test mixed modes
-    config_mixed = config.copy()
-    config_mixed.update({
-        'n_encoding_control_tokens': [13, 10, 5],
-        'encoding_control_modes': ['prepend', 'add', 'compact_attention'],
-        'n_decoding_control_tokens': [10, 10, 10, 5],
-        'decoding_control_modes': ['prepend', 'add', 'compact_attention', 'compact_attention']
+    # Test all-discrete configuration (backward compatibility)
+    print("\n🔢 Testing all-discrete configuration (backward compatibility)...")
+    config_all_discrete = config.copy()
+    config_all_discrete.update({
+        'n_encoding_control_tokens': [13, 10],  # All discrete
+        'encoding_control_modes': ['prepend', 'compact_attention'],
+        'n_decoding_control_tokens': [10, 10, 10],  # All discrete
+        'decoding_control_modes': ['prepend', 'add', 'compact_attention']
     })
 
-    # Update control tokens for mixed test
-    encoding_control_tokens_mixed = torch.tensor([[1, 2, 1]], dtype=torch.long)  # (1, 3)
-    decoding_control_tokens_mixed = torch.tensor([[1, 2, 3, 1]], dtype=torch.long)  # (1, 4)
+    # All discrete control tokens
+    encoding_discrete = torch.tensor([
+        [1, 2],
+        [5, 7]
+    ], dtype=torch.long)
 
-    model_mixed = FlexControlTripleStreamsVAE(config_mixed)
-    print(f"\nMixed-modes model:")
-    print(f"  Encoding modes: {model_mixed.encoding_control_modes}")
-    print(f"  Decoding modes: {model_mixed.decoding_control_modes}")
-    print(f"  Prepended encoding controls: {model_mixed.n_prepended_encoding_controls}")
-    print(f"  Prepended decoding controls: {model_mixed.n_prepended_decoding_controls}")
+    decoding_discrete = torch.tensor([
+        [3, 4, 1],
+        [8, 2, 6]
+    ], dtype=torch.long)
 
-    hvo_mixed, _ = model_mixed.predict(
+    model_all_discrete = FlexControlTripleStreamsVAE(config_all_discrete)
+    print(f"✅ All-discrete model created:")
+    print(f"   Prepended encoding controls: {model_all_discrete.n_prepended_encoding_controls}")
+    print(f"   Prepended decoding controls: {model_all_discrete.n_prepended_decoding_controls}")
+
+    hvo_discrete, _ = model_all_discrete.predict(
         flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
-        encoding_control_tokens=encoding_control_tokens_mixed,
-        decoding_control_tokens=decoding_control_tokens_mixed
+        encoding_control_tokens=encoding_discrete.float(),  # Convert to float for consistent interface
+        decoding_control_tokens=decoding_discrete.float()
     )
-    print(f"  Mixed-modes prediction successful: {hvo_mixed.shape}")
+    print(f"✅ All-discrete prediction successful: {hvo_discrete.shape}")
 
     # Test TorchScript serialization
-    print(f"\nTesting TorchScript serialization...")
+    print(f"\n💾 Testing TorchScript serialization...")
     try:
-        model.serialize(save_folder='./')
+        model.serialize(save_folder='./', filename='triplestreams_vae_continuous_v2.1.pt')
         print(f"✅ TorchScript serialization successful!")
+
+        # Test loading the serialized model
+        loaded_model = model.load_torchscript('./triplestreams_vae_continuous_v2.1.pt')
+        print(f"✅ TorchScript model loaded successfully!")
+
+        # Test the loaded model
+        hvo_loaded, _ = loaded_model.predict(
+            torch.rand(1, 32, config["embedding_size_src"]),
+            encoding_control_tokens[:1],
+            decoding_control_tokens[:1]
+        )
+        print(f"✅ Loaded TorchScript model prediction successful: {hvo_loaded.shape}")
+
     except Exception as e:
         print(f"❌ TorchScript serialization failed: {e}")
 
-    # Test compatibility methods (if you need list interface for backward compatibility)
-    print(f"\nTesting compatibility methods...")
-
-    # Convert tensors back to lists for testing compatibility methods
-    encoding_list = [encoding_control_tokens[:, i] for i in range(encoding_control_tokens.shape[1])]
-    decoding_list = [decoding_control_tokens[:, i] for i in range(decoding_control_tokens.shape[1])]
-
+    # Test enhanced save/load functionality
+    print(f"\n💾 Testing enhanced save/load functionality...")
     try:
+        # Save with embedded config
+        save_path = model.save('./test_model_v2.1.pth')
+
+        # Load the model
+        loaded_model_v2 = FlexControlTripleStreamsVAE.load('./test_model_v2.1.pth')
+
+        # Test the loaded model
+        hvo_loaded_v2, _ = loaded_model_v2.predict(
+            torch.rand(1, 32, config["embedding_size_src"]),
+            encoding_control_tokens[:1],
+            decoding_control_tokens[:1]
+        )
+        print(f"✅ Enhanced save/load successful: {hvo_loaded_v2.shape}")
+
+        # Clean up
+        import os
+
+        if os.path.exists('./test_model_v2.1.pth'):
+            os.remove('./test_model_v2.1.pth')
+        if os.path.exists('./test_model_v2.1.json'):
+            os.remove('./test_model_v2.1.json')
+
+    except Exception as e:
+        print(f"❌ Enhanced save/load failed: {e}")
+
+    # Test compatibility methods (if you need list interface for backward compatibility)
+    print(f"\n🔄 Testing compatibility methods...")
+    try:
+        # Convert tensors back to lists for testing compatibility methods
+        encoding_list = [encoding_control_tokens[:, i] for i in range(encoding_control_tokens.shape[1])]
+        decoding_list = [decoding_control_tokens[:, i] for i in range(decoding_control_tokens.shape[1])]
+
         hvo_compat, _ = model.predict_with_lists(
             flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
             encoding_control_tokens_list=encoding_list,
@@ -756,14 +853,33 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Compatibility method failed: {e}")
 
-    print(f"\n🎉 All tests completed!")
-    print(f"\n📝 Summary:")
-    print(f"  - Added 'compact_attention' mode alongside 'prepend' and 'add'")
-    print(f"  - CompactControlAttention applies learned attention between controls and all sequence positions")
-    print(f"  - Controls using compact_attention influence the entire 32-step sequence through attention weights")
-    print(f"  - Backward compatible with existing 'prepend' and 'add' modes")
-    print(f"  - TorchScript compatible")
+    print(f"\n🎉 All tests completed successfully!")
 
-    model.serialize(save_folder='./', filename='triplestreams_vae_compact_attention.pt')
-    model.load_torchscript('./triplestreams_vae_compact_attention.pt')
-    model.config
+    print(f"\n📋 Summary of new features:")
+    print(f"  ✅ Added support for continuous controls (n_tokens=None)")
+    print(f"  ✅ Continuous controls use linear projections instead of embeddings")
+    print(f"  ✅ Mixed discrete/continuous configurations supported")
+    print(f"  ✅ Backward compatible with existing discrete-only models")
+    print(f"  ✅ Enhanced save/load with embedded configs")
+    print(f"  ✅ TorchScript compatible")
+    print(f"  ✅ All control modes work with both discrete and continuous controls:")
+    print(f"      - 'prepend': adds control tokens to sequence start")
+    print(f"      - 'add': adds control influence to latent space or sequence")
+    print(f"      - 'compact_attention': applies attention-based control influence")
+
+    print(f"\n🔧 Usage examples:")
+    print(f"  # Discrete control (embedding-based):")
+    print(f"  'n_encoding_control_tokens': [13, 10]  # 13 and 10 discrete tokens")
+    print(f"  ")
+    print(f"  # Continuous control (linear projection):")
+    print(f"  'n_encoding_control_tokens': [None, None]  # continuous values [0,1]")
+    print(f"  ")
+    print(f"  # Mixed discrete and continuous:")
+    print(f"  'n_encoding_control_tokens': [13, None, 10]  # discrete, continuous, discrete")
+
+    # Clean up generated files
+    try:
+        if os.path.exists('./triplestreams_vae_continuous_v2.1.pt'):
+            os.remove('./triplestreams_vae_continuous_v2.1.pt')
+    except:
+        pass

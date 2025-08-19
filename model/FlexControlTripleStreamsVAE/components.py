@@ -3,7 +3,7 @@
 
 import torch
 import math
-from typing import List
+from typing import List, Optional, Union
 
 
 # --------------------------------------------------------------------------------
@@ -113,8 +113,10 @@ class CompactControlAttention(torch.nn.Module):
 class TensorBasedInputGrooveLayer(torch.nn.Module):
     """
     TorchScript-compatible input layer using tensors instead of lists.
+    Now supports both discrete (embedding) and continuous control values.
 
     Control modes: 0 = prepend, 1 = add, 2 = compact_attention
+    Control types: discrete (n_tokens is int) or continuous (n_tokens is None)
     """
 
     def __init__(self, embedding_size, d_model, max_len,
@@ -133,24 +135,46 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         mode_ints = [mode_mapping[mode] for mode in encoding_control_modes]
         self.register_buffer('encoding_control_modes', torch.tensor(mode_ints, dtype=torch.long))
 
+        # Store control types (True for discrete, False for continuous)
+        control_types = [n_tokens is not None for n_tokens in n_encoding_control_tokens]
+        self.register_buffer('control_is_discrete', torch.tensor(control_types, dtype=torch.bool))
+
         # Count prepended controls
         self.n_prepended_controls = sum(1 for mode in encoding_control_modes if mode == 'prepend')
 
-        # Create control embeddings
+        # Create control processing layers (embeddings for discrete, linear layers for continuous)
         self.control_embeddings = torch.nn.ModuleList()
+        self.control_projections = torch.nn.ModuleList()
+
         for i, (n_tokens, mode) in enumerate(zip(n_encoding_control_tokens, encoding_control_modes)):
-            if mode == 'prepend':
-                # Prepend mode: embedding outputs d_model dimensions
-                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
-            elif mode == 'add':
-                # Add mode: embedding outputs max_len * d_model for reshaping and addition
-                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=max_len * d_model)
-            elif mode == 'compact_attention':
-                # Compact attention mode: embedding outputs d_model dimensions
-                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
-            else:
-                raise ValueError(f"Unknown encoding control mode: {mode}")
-            self.control_embeddings.append(embedding)
+            if n_tokens is not None:  # Discrete control
+                if mode == 'prepend':
+                    # Prepend mode: embedding outputs d_model dimensions
+                    embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
+                elif mode == 'add':
+                    # Add mode: embedding outputs max_len * d_model for reshaping and addition
+                    embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=max_len * d_model)
+                elif mode == 'compact_attention':
+                    # Compact attention mode: embedding outputs d_model dimensions
+                    embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
+                else:
+                    raise ValueError(f"Unknown encoding control mode: {mode}")
+                self.control_embeddings.append(embedding)
+                self.control_projections.append(torch.nn.Identity())  # Placeholder for discrete controls
+            else:  # Continuous control
+                self.control_embeddings.append(torch.nn.Identity())  # Placeholder for continuous controls
+                if mode == 'prepend':
+                    # Project continuous value to d_model dimensions
+                    projection = torch.nn.Linear(1, d_model)
+                elif mode == 'add':
+                    # Project continuous value to max_len * d_model for reshaping and addition
+                    projection = torch.nn.Linear(1, max_len * d_model)
+                elif mode == 'compact_attention':
+                    # Project continuous value to d_model dimensions
+                    projection = torch.nn.Linear(1, d_model)
+                else:
+                    raise ValueError(f"Unknown encoding control mode: {mode}")
+                self.control_projections.append(projection)
 
         # Add compact attention module
         self.compact_attention = CompactControlAttention(d_model, positional_encoding_dropout)
@@ -170,8 +194,16 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         self.OffsetsReLU = torch.nn.ReLU()
 
     def init_weights(self, initrange=0.1):
-        for embedding in self.control_embeddings:
-            embedding.weight.data.uniform_(-initrange, initrange)
+        for i, (embedding, projection) in enumerate(zip(self.control_embeddings, self.control_projections)):
+            if self.control_is_discrete[i]:
+                # Initialize embedding
+                embedding.weight.data.uniform_(-initrange, initrange)
+            else:
+                # Initialize linear projection
+                if hasattr(projection, 'weight'):
+                    projection.weight.data.uniform_(-initrange, initrange)
+                    projection.bias.data.zero_()
+
         self.compact_attention.init_weights(initrange)
         self.HitsLinear.weight.data.uniform_(-initrange, initrange)
         self.HitsLinear.bias.data.zero_()
@@ -185,6 +217,8 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         '''
         :param hvo: shape (batch, max_len, 3)
         :param encoding_control_tokens: tensor of shape (batch, n_controls)
+                                      - For discrete controls: integer token indices
+                                      - For continuous controls: float values in [0, 1]
         :return: (batch, max_len + num_prepended_controls, d_model)
         '''
         hit = hvo[:, :, 0:1]
@@ -203,11 +237,19 @@ class TensorBasedInputGrooveLayer(torch.nn.Module):
         prepended_embeddings: List[torch.Tensor] = []
         compact_attention_embeddings: List[torch.Tensor] = []
 
-        for i, embedding in enumerate(self.control_embeddings):
-            token = encoding_control_tokens[:, i]  # (batch,)
+        for i, (embedding, projection) in enumerate(zip(self.control_embeddings, self.control_projections)):
+            control_value = encoding_control_tokens[:, i]  # (batch,)
             mode = self.encoding_control_modes[i].item()  # 0=prepend, 1=add, 2=compact_attention
+            is_discrete = self.control_is_discrete[i].item()
 
-            control_embedding = embedding(token)
+            if is_discrete:
+                # Discrete control: use embedding
+                control_token = control_value.long()  # Ensure integer type
+                control_embedding = embedding(control_token)
+            else:
+                # Continuous control: use linear projection
+                continuous_value = control_value.float().unsqueeze(1)  # (batch, 1)
+                control_embedding = projection(continuous_value)
 
             if mode == 0:  # prepend
                 # control_embedding shape: (batch, d_model)
@@ -348,8 +390,10 @@ class SingleFeatureOutputLayer(torch.nn.Module):
 
 class TensorBasedDecoderInput(torch.nn.Module):
     """ TorchScript-compatible decoder input using tensors instead of lists.
+    Now supports both discrete (embedding) and continuous control values.
 
     Control modes: 0 = prepend, 1 = add, 2 = compact_attention
+    Control types: discrete (n_tokens is int) or continuous (n_tokens is None)
     """
 
     def __init__(self, max_len, latent_dim, d_model,
@@ -366,24 +410,46 @@ class TensorBasedDecoderInput(torch.nn.Module):
         mode_ints = [mode_mapping[mode] for mode in decoding_control_modes]
         self.register_buffer('decoding_control_modes', torch.tensor(mode_ints, dtype=torch.long))
 
+        # Store control types (True for discrete, False for continuous)
+        control_types = [n_tokens is not None for n_tokens in n_decoding_control_tokens]
+        self.register_buffer('control_is_discrete', torch.tensor(control_types, dtype=torch.bool))
+
         # Count prepended controls
         self.n_prepended_controls = sum(1 for mode in decoding_control_modes if mode == 'prepend')
 
-        # Create control embeddings
+        # Create control processing layers (embeddings for discrete, linear layers for continuous)
         self.control_embeddings = torch.nn.ModuleList()
+        self.control_projections = torch.nn.ModuleList()
+
         for i, (n_tokens, mode) in enumerate(zip(n_decoding_control_tokens, decoding_control_modes)):
-            if mode == 'prepend':
-                # Control embeddings output d_model dimensions for prepending
-                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
-            elif mode == 'add':
-                # Original behavior: embeddings output latent_dim for summation
-                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=latent_dim)
-            elif mode == 'compact_attention':
-                # Compact attention mode: embeddings output d_model dimensions
-                embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
-            else:
-                raise ValueError(f"Unknown decoding control mode: {mode}")
-            self.control_embeddings.append(embedding)
+            if n_tokens is not None:  # Discrete control
+                if mode == 'prepend':
+                    # Control embeddings output d_model dimensions for prepending
+                    embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
+                elif mode == 'add':
+                    # Original behavior: embeddings output latent_dim for summation
+                    embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=latent_dim)
+                elif mode == 'compact_attention':
+                    # Compact attention mode: embeddings output d_model dimensions
+                    embedding = torch.nn.Embedding(num_embeddings=n_tokens, embedding_dim=d_model)
+                else:
+                    raise ValueError(f"Unknown decoding control mode: {mode}")
+                self.control_embeddings.append(embedding)
+                self.control_projections.append(torch.nn.Identity())  # Placeholder for discrete controls
+            else:  # Continuous control
+                self.control_embeddings.append(torch.nn.Identity())  # Placeholder for continuous controls
+                if mode == 'prepend':
+                    # Project continuous value to d_model dimensions
+                    projection = torch.nn.Linear(1, d_model)
+                elif mode == 'add':
+                    # Project continuous value to latent_dim for addition to latent_z
+                    projection = torch.nn.Linear(1, latent_dim)
+                elif mode == 'compact_attention':
+                    # Project continuous value to d_model dimensions
+                    projection = torch.nn.Linear(1, d_model)
+                else:
+                    raise ValueError(f"Unknown decoding control mode: {mode}")
+                self.control_projections.append(projection)
 
         # Add compact attention module
         self.compact_attention = CompactControlAttention(d_model)
@@ -395,8 +461,17 @@ class TensorBasedDecoderInput(torch.nn.Module):
         self.fc.bias.data.zero_()
         self.fc.weight.data.uniform_(-initrange, initrange)
         self.compact_attention.init_weights(initrange)
-        for embedding in self.control_embeddings:
-            embedding.weight.data.uniform_(-initrange, initrange)
+
+        for i, (embedding, projection) in enumerate(zip(self.control_embeddings, self.control_projections)):
+            if self.control_is_discrete[i]:
+                # Initialize embedding
+                if hasattr(embedding, 'weight'):
+                    embedding.weight.data.uniform_(-initrange, initrange)
+            else:
+                # Initialize linear projection
+                if hasattr(projection, 'weight'):
+                    projection.weight.data.uniform_(-initrange, initrange)
+                    projection.bias.data.zero_()
 
     @torch.jit.export
     def forward(self, latent_z: torch.Tensor, decoding_control_tokens: torch.Tensor):
@@ -405,6 +480,8 @@ class TensorBasedDecoderInput(torch.nn.Module):
 
         :param latent_z: shape (batch, latent_dim)
         :param decoding_control_tokens: tensor of shape (batch, n_controls)
+                                      - For discrete controls: integer token indices
+                                      - For continuous controls: float values in [0, 1]
 
         :return:
                 when all controls are 'add': (batch, max_len, d_model_dec)
@@ -417,11 +494,19 @@ class TensorBasedDecoderInput(torch.nn.Module):
         compact_attention_embeddings: List[torch.Tensor] = []
 
         # Process each control token
-        for i, embedding in enumerate(self.control_embeddings):
-            token = decoding_control_tokens[:, i]  # (batch,)
+        for i, (embedding, projection) in enumerate(zip(self.control_embeddings, self.control_projections)):
+            control_value = decoding_control_tokens[:, i]  # (batch,)
             mode = self.decoding_control_modes[i].item()  # 0=prepend, 1=add, 2=compact_attention
+            is_discrete = self.control_is_discrete[i].item()
 
-            control_embedding = embedding(token)
+            if is_discrete:
+                # Discrete control: use embedding
+                control_token = control_value.long()  # Ensure integer type
+                control_embedding = embedding(control_token)
+            else:
+                # Continuous control: use linear projection
+                continuous_value = control_value.float().unsqueeze(1)  # (batch, 1)
+                control_embedding = projection(continuous_value)
 
             if mode == 0:  # prepend
                 # control_embedding shape: (batch, d_model)
