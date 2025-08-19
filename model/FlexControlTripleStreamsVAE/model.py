@@ -57,9 +57,31 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         self.latent_dim = config['latent_dim']
 
         # Flexible control configuration
-        self.n_encoding_control_tokens = config['n_encoding_control_tokens']
+        self.n_encoding_control_tokens = []
+        for x in config['n_encoding_control_tokens']:
+            if isinstance(x, int):
+                self.n_encoding_control_tokens.append(x)
+            elif isinstance(x, str):
+                if x.lower() in ['none', 'null']:
+                    self.n_encoding_control_tokens.append(None)
+                else:
+                    raise ValueError(f"Invalid control token count: {x}. Must be an int or 'None'.")
+            else:
+                raise TypeError(f"Invalid type for n_encoding_control_tokens: {type(x)}. Must be int or str.")
+
         self.encoding_control_modes = config['encoding_control_modes']
-        self.n_decoding_control_tokens = config['n_decoding_control_tokens']
+        self.n_decoding_control_tokens = []
+        for x in config['n_decoding_control_tokens']:
+            if isinstance(x, int):
+                self.n_decoding_control_tokens.append(x)
+            elif isinstance(x, str):
+                if x.lower() in ['none', 'null']:
+                    self.n_decoding_control_tokens.append(None)
+                else:
+                    raise ValueError(f"Invalid control token count: {x}. Must be an int or 'None'.")
+            else:
+                raise TypeError(f"Invalid type for n_decoding_control_tokens: {type(x)}. Must be int or str.")
+
         self.decoding_control_modes = config['decoding_control_modes']
 
         # Validate control configuration
@@ -76,6 +98,8 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         # Count prepended controls for latent layer sizing
         self.n_prepended_encoding_controls = sum(1 for mode in self.encoding_control_modes if mode == 'prepend')
         self.n_prepended_decoding_controls = sum(1 for mode in self.decoding_control_modes if mode == 'prepend')
+
+        print(self.n_encoding_control_tokens, self.n_decoding_control_tokens)
 
         # Layers for the Groove2Drum VAE
         # ---------------------------------------------------
