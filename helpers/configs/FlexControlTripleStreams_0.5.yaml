@@ -129,7 +129,7 @@ beta_level: 0.5
 # ===================================================================================
 
 # Epoch Percentage-based logging frequencies
-step_log_frequency_epoch_pct: 0.05                       # Log every 0.05% = every 0.0005 epochs
+step_log_frequency_epoch_pct: 0.5                       # Log every 0.5% = every 0.005 epochs
 step_hit_score_frequency_epoch_pct: 10.0                 # Hit scores every 10% = every 0.1 epochs
 step_piano_roll_frequency_epoch_pct: 25.0                # Piano rolls every 25% = every 0.25 epochs
 
