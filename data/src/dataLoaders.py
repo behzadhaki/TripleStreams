@@ -684,9 +684,9 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.max_len = config["max_len"]
 
         # Flexible control configuration
-        self.n_encoding_controls = config["n_encoding_controls"]
+        self.n_encoding_control_tokens = config["n_encoding_control_tokens"]
         self.encoding_control_keys = config["encoding_control_keys"]
-        self.n_decoding_controls = config["n_decoding_controls"]
+        self.n_decoding_control_tokens = config["n_decoding_control_tokens"]
         self.decoding_control_keys = config["decoding_control_keys"]
         features = {}
 
@@ -699,7 +699,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             filename = "".join([df.split("_")[0] for df in self.dataset_files])
 
             # Create hash for control configuration to ensure cache consistency
-            control_config_str = f"{self.n_encoding_controls}_{self.encoding_control_keys}_{self.n_decoding_controls}_{self.decoding_control_keys}"
+            control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
             control_hash = hashlib.md5(control_config_str.encode()).hexdigest()[:8]
 
             filename += f"_flexcontrol_{self.max_len}_{downsampled_size}_{control_hash}"
@@ -775,8 +775,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
                 stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
 
-                total_hits = stream_1_hits + stream_2_hits + stream_3_hits
-                features.update({"Total Out Hits": total_hits.tolist()})
+                total_hits = (stream_1_hits + stream_2_hits + stream_3_hits)
+                features.update({"Total Out Hits": (total_hits / 96.0).tolist()})
 
                 # replace zeros with 1
                 total_hits[total_hits == 0] = 1
@@ -830,8 +830,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             # ------------------------------------------------------------------------------------------
             # Populate flexible control tokens
             # ------------------------------------------------------------------------------------------
-            n_encoding_controls = len(self.encoding_control_keys)
-            n_decoding_controls = len(self.decoding_control_keys)
+            n_encoding_control_tokens = len(self.encoding_control_keys)
+            n_decoding_control_tokens = len(self.decoding_control_keys)
 
 
             def tokenize(features, key, n_tokens):
@@ -872,41 +872,40 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     available_keys = '\n'.join(features.keys())
                     raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
 
-                tokens = TokenizeControls(
-                    control_array=control_array,
-                    n_bins=n_tokens,
-                    low=low,
-                    high=high
-                )
-                
                 if n_tokens is None:     # if control arrays are not needed then we wont use the tokens but rather the continuous values.
                     return control_array, control_array 
                 else:
+                    tokens = TokenizeControls(
+                        control_array=control_array,
+                        n_bins=n_tokens,
+                        low=low,
+                        high=high
+                    )
                     return tokens, control_array
 
             # Create encoding control tokens tensor
             encoding_control_values_list = []
             encoding_tokens_list = []
-            for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_controls)):
-                tokens, control_array = tokenize(features, key, n_tokens)
-                encoding_tokens_list.append(tokens)
+            for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
+                tokens_or_controls, control_array = tokenize(features, key, n_tokens)
+                encoding_tokens_list.append(tokens_or_controls)
                 encoding_control_values_list.append(control_array)
-            # Stack encoding tokens: shape (n_samples, n_encoding_controls)
+            # Stack encoding tokens: shape (n_samples, n_encoding_control_tokens)
             self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
             self.encoding_controls = np.stack(encoding_tokens_list,
-                                                    axis=1)  # Shape (n_samples, n_encoding_controls)
+                                                    axis=1)  # Shape (n_samples, n_encoding_control_tokens)
 
             # Create decoding control tokens tensor
             decoding_control_values_list = []
             decoding_tokens_list = []
-            for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_controls)):
-                tokens, control_array = tokenize(features, key, n_tokens)
-                decoding_tokens_list.append(tokens)
+            for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
+                tokens_or_controls, control_array = tokenize(features, key, n_tokens)
+                decoding_tokens_list.append(tokens_or_controls)
                 decoding_control_values_list.append(control_array)
-            # Stack decoding tokens: shape (n_samples, n_decoding_controls)
+            # Stack decoding tokens: shape (n_samples, n_decoding_control_tokens)
             self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
             self.decoding_controls = np.stack(decoding_tokens_list,
-                                                    axis=1)  # Shape (n_samples, n_decoding_controls)
+                                                    axis=1)  # Shape (n_samples, n_decoding_control_tokens)
 
             # cache the processed data
             # ------------------------------------------------------------------------------------------
@@ -987,8 +986,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.input_grooves = torch.tensor(self.input_grooves, dtype=torch.float32)
         self.output_streams = torch.tensor(self.output_streams, dtype=torch.float32)
         self.flat_output_streams = torch.tensor(self.flat_output_streams, dtype=torch.float32)
-        self.encoding_controls = torch.tensor(self.encoding_controls, dtype=torch.long)
-        self.decoding_controls = torch.tensor(self.decoding_controls, dtype=torch.long)
+        self.encoding_controls = torch.tensor(self.encoding_controls, dtype=torch.float32)
+        self.decoding_controls = torch.tensor(self.decoding_controls, dtype=torch.float32)
         self.decoding_control_values = torch.tensor(self.decoding_control_values, dtype=torch.float32)
         self.encoding_control_values = torch.tensor(self.encoding_control_values, dtype=torch.float32)
 
@@ -1010,8 +1009,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
     def __getitem__(self, idx):
         return (self.input_grooves[idx],
                 self.output_streams[idx],
-                self.encoding_controls[idx],  # tensor shape: (n_encoding_controls,)
-                self.decoding_controls[idx],  # tensor shape: (n_decoding_controls,)
+                self.encoding_controls[idx],  # tensor shape: (n_encoding_control_tokens,)
+                self.decoding_controls[idx],  # tensor shape: (n_decoding_control_tokens,)
                 self.metadata[idx],
                 self.indices[idx]
                 )
@@ -1094,9 +1093,9 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         instance.dataset_files = config["dataset_files"]
         instance.subset_tag = subset_tag
         instance.max_len = config["max_len"]
-        instance.n_encoding_controls = config["n_encoding_controls"]
+        instance.n_encoding_control_tokens = config["n_encoding_control_tokens"]
         instance.encoding_control_keys = config["encoding_control_keys"]
-        instance.n_decoding_controls = config["n_decoding_controls"]
+        instance.n_decoding_control_tokens = config["n_decoding_control_tokens"]
         instance.decoding_control_keys = config["decoding_control_keys"]
 
         # Assign concatenated data
@@ -1259,14 +1258,14 @@ if __name__ == "__main__":
         ],
 
         # Encoding Controls (converted from legacy encoding_control1/2)
-        'n_encoding_controls': [33, 5],  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
+        'n_encoding_control_tokens': [33, 5],  # Was: n_encoding_control1_tokens: 33, n_encoding_control2_tokens: 10
         'encoding_control_modes': ['prepend', 'prepend'],  # Strategic: first prepended, second added
         'encoding_control_keys':
             ["Structural Similarity Distance",  # Was: encoding_control1_key
             "Flat Out Vs. Input | Accent | Hamming"],  # Was: encoding_control2_key
 
         # Decoding Controls (converted from legacy decoding_control1/2/3)
-        'n_decoding_controls': [97, 10, 10, 10],  # Was: n_decoding_control1/2/3_tokens: 10
+        'n_decoding_control_tokens': [97, 10, 10, 10],  # Was: n_decoding_control1/2/3_tokens: 10
         'decoding_control_modes': ['prepend', 'prepend', 'prepend', 'prepend'],  # All prepended (legacy behavior)
         'decoding_control_keys':
             ["Total Out Hits",
