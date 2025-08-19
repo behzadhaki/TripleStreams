@@ -88,7 +88,7 @@ encoding_control_keys:
 
 # Decoding Controls (converted from legacy decoding_control1/2/3)
 n_decoding_control_tokens: [None, None, None, None, None]  # No need to tokenize these controls
-decoding_control_modes: ['compact_attention', 'compact_attention', 'compact_attention', 'compact_attention', 'compact_attention']  # All prepended (legacy behavior)
+decoding_control_modes: ['self_attention', 'self_attention', 'self_attention', 'self_attention', 'self_attention']  # All prepended (legacy behavior)
 decoding_control_keys:
   - "Total Out Hits"        # Normalized to 0-1, 0 means no hits, 1 means all hits (96 = 32 steps * 3 streams)
   - "Output Step Density"   # Total hits divided by number of steps with hits (to denote rate of co-occurrence of hits) (Normalized to 0-1)
@@ -101,7 +101,7 @@ decoding_control_keys:
 # ===================================================================================
 
 epochs: 1000
-batch_size: 32
+batch_size: 128
 
 # Optimizer settings
 lr: 0.00006369948608989782
