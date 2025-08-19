@@ -498,7 +498,7 @@ def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_prof
     loss_h = hit_loss_function(hit_logits, hit_targets)
 
     # Base weighting: put more weight on the hits
-    hit_mask = (hit_targets > 0).float() * 0.5 + 1 if use_hit_mask else None  # hits weighted ~1.5x more than misses
+    hit_mask = (hit_targets > 0).float() * 2 + 1 if use_hit_mask else None  # hits weighted ~3x more than misses
 
     if hit_loss_function.reduction == 'none':
 
