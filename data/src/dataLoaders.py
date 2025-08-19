@@ -835,6 +835,12 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
 
 
             def tokenize(features, key, n_tokens):
+                if isinstance(n_tokens, str):
+                    if n_tokens.lower() == "none":
+                        n_tokens = None
+                    else:
+                        assert isinstance(n_tokens, int), f"n_tokens should be an int or 'None', got {n_tokens}"
+
                 if key == "Flat Out Vs. Input | Hits | Hamming":
                     low = 0.0
                     high = 32.0
