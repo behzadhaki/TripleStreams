@@ -452,6 +452,12 @@ assert "wandb_project" in hparams.keys(), "wandb_project not specified"
 
 if __name__ == "__main__":
 
+    # Force None values to be actual None
+    hparams['n_encoding_control_tokens'] = [None if x in [None, 'None', 'null'] else x
+                                           for x in hparams['n_encoding_control_tokens']]
+    hparams['n_decoding_control_tokens'] = [None if x in [None, 'None', 'null'] else x
+                                           for x in hparams['n_decoding_control_tokens']]
+
     # Initialize wandb
     wandb_run = wandb.init(
         config=hparams,
