@@ -696,6 +696,22 @@ if __name__ == "__main__":
     print(f"   Prepended encoding controls: {model.n_prepended_encoding_controls}")
     print(f"   Prepended decoding controls: {model.n_prepended_decoding_controls}")
 
+    # Print control types for verification
+    print(f"   Encoding control types (discrete=True): {model.InputLayerEncoder.control_is_discrete}")
+    print(f"   Decoding control types (discrete=True): {model.HitsDecoderInput.control_is_discrete}")
+
+    # Test type handling specifically
+    print("\n🔍 Testing mixed type handling...")
+    print(f"   Input tensor dtype: {encoding_control_tokens.dtype}")
+    print(f"   Encoding values: {encoding_control_tokens}")
+    print(f"   - Control 0 (discrete): {encoding_control_tokens[:, 0]} -> will be cast to Long")
+    print(f"   - Control 1 (continuous): {encoding_control_tokens[:, 1]} -> will remain Float")
+
+    print(f"   Decoding values: {decoding_control_tokens}")
+    print(f"   - Control 0 (discrete): {decoding_control_tokens[:, 0]} -> will be cast to Long")
+    print(f"   - Control 1 (continuous): {decoding_control_tokens[:, 1]} -> will remain Float")
+    print(f"   - Control 2 (continuous): {decoding_control_tokens[:, 2]} -> will remain Float")
+
     # Test forward pass
     print("\n🔄 Testing forward pass...")
     h_logits, v_logits, o_logits, mu, log_var, latent_z = model.forward(
@@ -709,6 +725,69 @@ if __name__ == "__main__":
     print(f"   v_logits shape: {v_logits.shape}")
     print(f"   o_logits shape: {o_logits.shape}")
     print(f"   latent_z shape: {latent_z.shape}")
+
+    # Test edge cases for type handling
+    print("\n🧪 Testing edge cases for type handling...")
+
+    # Test with integer-like floats (should work for discrete controls)
+    encoding_edge_case = torch.tensor([
+        [1.0, 0.7],  # 1.0 should be castable to Long(1)
+        [5.0, 0.3]  # 5.0 should be castable to Long(5)
+    ], dtype=torch.float32)
+
+    decoding_edge_case = torch.tensor([
+        [3.0, 0.8, 0.2],  # 3.0 should be castable to Long(3)
+        [7.0, 0.1, 0.9]  # 7.0 should be castable to Long(7)
+    ], dtype=torch.float32)
+
+    try:
+        hvo_edge, _ = model.predict(
+            flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+            encoding_control_tokens=encoding_edge_case,
+            decoding_control_tokens=decoding_edge_case
+        )
+        print(f"✅ Edge case (integer-like floats) successful: {hvo_edge.shape}")
+    except Exception as e:
+        print(f"❌ Edge case failed: {e}")
+
+    # Test with out-of-range discrete values (should fail gracefully)
+    print("\n⚠️  Testing out-of-range discrete values...")
+    encoding_invalid = torch.tensor([
+        [100.0, 0.7],  # 100 is out of range for embedding size 13
+        [5.0, 0.3]
+    ], dtype=torch.float32)
+
+    try:
+        hvo_invalid, _ = model.predict(
+            flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+            encoding_control_tokens=encoding_invalid,
+            decoding_control_tokens=decoding_control_tokens
+        )
+        print(f"❌ Should have failed with out-of-range values!")
+    except Exception as e:
+        print(f"✅ Correctly caught out-of-range error: {type(e).__name__}")
+
+    # Test boundary values for continuous controls
+    print("\n🎯 Testing boundary values for continuous controls...")
+    encoding_boundary = torch.tensor([
+        [0.0, 0.0],  # Min values
+        [12.0, 1.0]  # Max discrete value, max continuous value
+    ], dtype=torch.float32)
+
+    decoding_boundary = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [9.0, 1.0, 1.0]
+    ], dtype=torch.float32)
+
+    try:
+        hvo_boundary, _ = model.predict(
+            flat_hvo_groove=torch.rand(batch_size, 32, config["embedding_size_src"]),
+            encoding_control_tokens=encoding_boundary,
+            decoding_control_tokens=decoding_boundary
+        )
+        print(f"✅ Boundary values test successful: {hvo_boundary.shape}")
+    except Exception as e:
+        print(f"❌ Boundary values test failed: {e}")
 
     # Test prediction
     print("\n🎯 Testing prediction...")
