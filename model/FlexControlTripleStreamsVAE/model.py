@@ -467,19 +467,122 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
 
         return converted_state_dict
 
-    def save(self, save_path, additional_info=None):
-        """ Saves the model to the given path. The Saved pickle has all the parameters ('params' field) as well as
-        the state_dict ('state_dict' field) """
+    def save(self, save_path, additional_info=None, include_legacy_json=True, save_version='2.0'):
+        """
+        Enhanced save method that embeds config in the model file for self-contained loading.
+
+        Args:
+            save_path: Path to save the model
+            additional_info: Additional metadata to include
+            include_legacy_json: Whether to also save separate .json config file for backward compatibility
+            save_version: Version string to track save format evolution
+        """
         if not save_path.endswith('.pth'):
             save_path += '.pth'
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-        config_ = dict()
+        # Prepare config dictionary
+        config = dict()
         for key, value in self.config.items():
-            config_[key] = value
-        json.dump(config_, open(save_path.replace('.pth', '.json'), 'w'))
-        torch.save({'model_state_dict': self.state_dict(), 'params': config_,
-                    'additional_info': additional_info}, save_path)
+            config[key] = value
+
+        # Prepare comprehensive save dictionary
+        save_dict = {
+            'model_state_dict': self.state_dict(),
+            'params': config,  # Embedded config for self-contained loading
+            'additional_info': additional_info,
+            'model_class': self.__class__.__name__,
+            'save_version': save_version,
+            'pytorch_version': torch.__version__,
+            'model_architecture': 'FlexControlTripleStreamsVAE'
+        }
+
+        # Save the main model file with embedded config
+        torch.save(save_dict, save_path)
+        print(f"✅ Saved model with embedded config: {save_path}")
+
+        # Optionally save separate JSON config file for legacy compatibility
+        if include_legacy_json:
+            json_path = save_path.replace('.pth', '.json')
+            with open(json_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"📄 Legacy JSON config saved: {json_path}")
+
+        return save_path
+
+    def save_legacy(self, save_path, additional_info=None):
+        """
+        Legacy save method (original behavior) - saves separate .json config file.
+        Kept for compatibility with older workflows.
+        """
+        if not save_path.endswith('.pth'):
+            save_path += '.pth'
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        config = dict()
+        for key, value in self.config.items():
+            config[key] = value
+
+        # Save config as separate JSON file (original behavior)
+        json.dump(config, open(save_path.replace('.pth', '.json'), 'w'))
+
+        # Save model with minimal embedded info (original behavior)
+        torch.save({
+            'model_state_dict': self.state_dict(),
+            'params': config,
+            'additional_info': additional_info
+        }, save_path)
+
+        print(f"📁 Legacy save completed: {save_path}")
+        return save_path
+
+    @classmethod
+    def load(cls, model_path, device=None, is_evaluating=True):
+        """
+        Class method for convenient loading of FlexControlTripleStreamsVAE models.
+        Automatically handles both new (embedded config) and legacy (separate JSON) formats.
+        """
+        try:
+            if device is not None:
+                loaded_dict = torch.load(model_path, map_location=device, weights_only=False)
+            else:
+                loaded_dict = torch.load(model_path, weights_only=False)
+        except:
+            loaded_dict = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+
+        # Try embedded config first (new format)
+        if 'params' in loaded_dict:
+            config = loaded_dict['params']
+            print(f"✅ Loading with embedded config")
+        else:
+            # Fallback to companion JSON file (legacy format)
+            json_path = model_path.replace('.pth', '.json')
+            if os.path.exists(json_path):
+                with open(json_path, 'r') as f:
+                    config = json.load(f)
+                print(f"⚠️  Loading with legacy JSON config: {json_path}")
+            else:
+                raise FileNotFoundError(
+                    f"No config found. Expected either:\n"
+                    f"1. Embedded config in {model_path}\n"
+                    f"2. Companion JSON file: {json_path}"
+                )
+
+        # Create and load model
+        model = cls(config)
+        model.load_state_dict(loaded_dict["model_state_dict"])
+
+        if is_evaluating:
+            model.eval()
+
+        print(f"🎉 Successfully loaded {cls.__name__}")
+        return model
+
+    @classmethod
+    def load_torchscript(cls, script_path, device=None):
+        """Load a serialized TorchScript model"""
+        model = torch.jit.load(script_path, map_location=device or 'cpu')
+        return model
 
     # serializes to a torchscript model
     @torch.jit.ignore
@@ -505,6 +608,7 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
     @torch.jit.export
     def get_latent_dim(self):
         return self.latent_dim
+
 
 if __name__ == "__main__":
     # Test configuration with flexible controls including compact_attention
@@ -661,3 +765,5 @@ if __name__ == "__main__":
     print(f"  - TorchScript compatible")
 
     model.serialize(save_folder='./', filename='triplestreams_vae_compact_attention.pt')
+    model.load_torchscript('./triplestreams_vae_compact_attention.pt')
+    model.config
