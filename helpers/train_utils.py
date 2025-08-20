@@ -459,7 +459,7 @@ def save_model_checkpoint_enhanced(model, optimizer, beta_scheduler, step, save_
             if hasattr(beta_scheduler, 'kl_history'):
                 checkpoint['beta_scheduler_state']['kl_history'] = beta_scheduler.kl_history
 
-        torch.save(checkpoint, model_path)
+        model.save(model_path)
         model_artifact.add_file(model_path)
         wandb.run.log_artifact(model_artifact)
         logger.info(f"Enhanced checkpoint saved to {model_path}")
