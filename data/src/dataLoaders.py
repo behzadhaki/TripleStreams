@@ -763,42 +763,18 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                         loaded_data_dictionary[k].extend(v)
                 n_samples += len(temp["metadata"])
 
-            features.update({"Flat Out Vs. Input | Hits | Hamming": loaded_data_dictionary["Flat Out Vs. Input | Hits | Hamming"]})
-            features.update({"Flat Out Vs. Input | Accent | Hamming": loaded_data_dictionary["Flat Out Vs. Input | Accent | Hamming"]})
-            features.update({"Stream 1 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary["Stream 1 Vs. Flat Out | Hits | Hamming"]})
-            features.update({"Stream 2 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary["Stream 2 Vs. Flat Out | Hits | Hamming"]})
-            features.update({"Stream 3 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary["Stream 3 Vs. Flat Out | Hits | Hamming"]})
+            features.update(
+                {"Flat Out Vs. Input | Hits | Hamming": loaded_data_dictionary["Flat Out Vs. Input | Hits | Hamming"]})
+            features.update({"Flat Out Vs. Input | Accent | Hamming": loaded_data_dictionary[
+                "Flat Out Vs. Input | Accent | Hamming"]})
+            features.update({"Stream 1 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary[
+                "Stream 1 Vs. Flat Out | Hits | Hamming"]})
+            features.update({"Stream 2 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary[
+                "Stream 2 Vs. Flat Out | Hits | Hamming"]})
+            features.update({"Stream 3 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary[
+                "Stream 3 Vs. Flat Out | Hits | Hamming"]})
 
-            # Check if relative hit density is present
-            if "Relative Density" not in loaded_data_dictionary or "Total Out Hits" not in loaded_data_dictionary:
-                stream_1_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 0], axis=-1)
-                stream_2_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 1], axis=-1)
-                stream_3_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, 2], axis=-1)
-
-                total_hits = (stream_1_hits + stream_2_hits + stream_3_hits)
-                features.update({"Total Out Hits": (total_hits / 96.0).tolist()})
-
-                # replace zeros with 1
-                total_hits[total_hits == 0] = 1
-
-                features.update({"Stream 1 Relative Density": (stream_1_hits / total_hits).tolist() })
-                features.update({"Stream 2 Relative Density": (stream_2_hits / total_hits).tolist() })
-                features.update({"Stream 3 Relative Density": (stream_3_hits / total_hits).tolist() })
-
-            if "Structural Similarity Distance" not in loaded_data_dictionary:
-                # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
-                flat_in_vels = np.clip(np.array(loaded_data_dictionary["input_hvos"])[:, :, 1], 0, 1)
-                flat_out_vels = np.clip(np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 1], 0, 1)
-                features.update({"Structural Similarity Distance": np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)), 0, 10)})
-
-            if "Output Step Density" not in loaded_data_dictionary:
-                # total onsets divided by the number of steps with at least one onset
-                flat_out_hits = np.clip(np.array(loaded_data_dictionary["flat_out_hvos"])[:, :, 0], 0, 1)
-                steps_with_at_least_one_onset = flat_out_hits.sum(axis=-1)
-                steps_with_at_least_one_onset[steps_with_at_least_one_onset == 0] = 1  # avoid division by zero
-
-                total_out_hits = np.sum(np.array(loaded_data_dictionary["output_hvos"])[:, :, :3], axis=-1).sum(axis=-1)
-                features.update({"Output Step Density": (total_out_hits / steps_with_at_least_one_onset).tolist()})
+            features.update(self.extract_features_dict(loaded_data_dictionary))
 
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
@@ -1143,6 +1119,82 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             dataLoaderLogger.info(f"Concatenated FlexControl dataset created with {len(instance)} samples")
         return instance
 
+    @classmethod
+    def flatten_triple_streams(cls, hvos):
+        assert len(hvos.shape) == 3, "Expected shape of hvos is (n_samples, n_steps, n_voices*3)"
+        flat_out_hvos = np.zeros((hvos.shape[0], hvos.shape[1], 3))
+
+        # get hits
+        flat_out_hvos[:, :, 0] = np.clip(np.sum(hvos[:, :, :3], axis=-1), 0,
+                                         1)  # sum hits across streams
+        # get indices of max velocities
+        max_vel_indices = np.argmax(hvos[:, :, 3:6], axis=-1)
+        # set flat out velocities based on max velocity indices
+        flat_out_hvos[:, :, 1] = np.take_along_axis(hvos[:, :, 3:6], max_vel_indices[..., None],
+                                                    axis=-1).squeeze(-1)
+        # use same for offsets
+        flat_out_hvos[:, :, 2] = np.take_along_axis(hvos[:, :, 6:9], max_vel_indices[..., None],
+                                                    axis=-1).squeeze(-1)
+        return flat_out_hvos
+
+    @classmethod
+    def extract_features_dict(cls, data_dict, normalize=False):
+
+        assert ("input_hvos" in data_dict and
+                "output_hvos" in data_dict), \
+            "input_hvos, output_hvos must be present in the loaded data dictionary"
+
+        if "flat_out_hvos" not in data_dict:
+            # flatten the output_hvos to get flat_out_hvos
+            data_dict["flat_out_hvos"] = cls.flatten_triple_streams(data_dict["output_hvos"])
+
+        features_extracted = {}
+
+        # Check if relative hit density is present
+        if "Relative Density" not in data_dict or "Total Out Hits" not in data_dict:
+            stream_1_hits = np.sum(np.array(data_dict["output_hvos"])[:, :, 0], axis=-1)
+            stream_2_hits = np.sum(np.array(data_dict["output_hvos"])[:, :, 1], axis=-1)
+            stream_3_hits = np.sum(np.array(data_dict["output_hvos"])[:, :, 2], axis=-1)
+
+            total_hits = (stream_1_hits + stream_2_hits + stream_3_hits)
+
+            if normalize:
+                features_extracted.update({"Total Out Hits": (total_hits / 96.0).tolist()})
+            else:
+                features_extracted.update({"Total Out Hits": (total_hits).tolist()})
+
+            # replace zeros with 1
+            total_hits[total_hits == 0] = 1
+
+            features_extracted.update({"Stream 1 Relative Density": (stream_1_hits / total_hits).tolist()})
+            features_extracted.update({"Stream 2 Relative Density": (stream_2_hits / total_hits).tolist()})
+            features_extracted.update({"Stream 3 Relative Density": (stream_3_hits / total_hits).tolist()})
+
+
+        if "Structural Similarity Distance" not in data_dict:
+            # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
+            flat_in_vels = np.clip(np.array(data_dict["input_hvos"])[:, :, 1], 0, 1)
+            flat_out_vels = np.clip(np.array(data_dict["flat_out_hvos"])[:, :, 1], 0, 1)
+            struct_sim = np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)), 0, 10)
+            if normalize:
+                features_extracted["Structural Similarity Distance"] = (struct_sim / 5.6568).tolist()
+            else:
+                features_extracted["Structural Similarity Distance"] = struct_sim.tolist()
+
+        if "Output Step Density" not in data_dict:
+            # total onsets divided by the number of steps with at least one onset
+            flat_out_hits = np.clip(np.array(data_dict["flat_out_hvos"])[:, :, 0], 0, 1)
+            steps_with_at_least_one_onset = flat_out_hits.sum(axis=-1)
+            steps_with_at_least_one_onset[steps_with_at_least_one_onset == 0] = 1  # avoid division by zero
+
+            total_out_hits = np.sum(np.array(data_dict["output_hvos"])[:, :, :3], axis=-1).sum(axis=-1)
+            features_extracted.update(
+                {"Output Step Density": (total_out_hits / steps_with_at_least_one_onset).tolist()})
+
+            if normalize:
+                features_extracted["Output Step Density"] = np.clip((np.round(features_extracted["Output Step Density"], 5) - 1), 0, 3) / (3.0 - 1.0)
+
+        return features_extracted
 
 def get_flexcontrol_triplestream_dataset(
         config,
@@ -1151,7 +1203,7 @@ def get_flexcontrol_triplestream_dataset(
         downsampled_size=None,
         force_regenerate=False,
         move_all_to_cuda=False,
-        print_logs=False):
+        print_logs=False,):
     """
     Get FlexControl dataset that returns control tokens as tensors instead of individual tokens.
     """
