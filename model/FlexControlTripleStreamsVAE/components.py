@@ -671,6 +671,7 @@ class TensorBasedDecoderInput(torch.nn.Module):
             elif mode_val == 3:  # self_attention
                 # Self-attention controls can be used for compact_attention or other downstream processing
                 # For now, we'll treat them as compact_attention after self-attention refinement
+                # REMEMBER: self_attention controls are already refined (passed through self-attention)
                 compact_attention_embeddings.append(control_embedding)
 
         # Project modified latent and reshape to (batch, max_len, d_model)
