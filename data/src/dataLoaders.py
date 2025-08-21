@@ -206,7 +206,7 @@ def hvo_to_polar_center_of_mass(hvo, use_velocity=False, use_microtiming=False):
              - [:, :, 0] = onsets (binary)
              - [:, :, 1] = velocities (0-1)
              - [:, :, 2] = microtiming (-0.5 to 0.5)
-        use_velocity: bool, if True use velocity as radius, else use 1
+        use_velocity: bool, if True use velocity as radius (normalized to max), else use 1
         use_microtiming: bool, if True adjust timing with microtiming offset
 
     Returns:
@@ -231,7 +231,11 @@ def hvo_to_polar_center_of_mass(hvo, use_velocity=False, use_microtiming=False):
 
     # Determine radius for each point: shape [batch_size, 32]
     if use_velocity:
-        radius = hvo[:, :, 1]  # use velocity as radius
+        # Normalize velocity to max value per batch
+        max_velocity = np.max(hvo[:, :, 1], axis=1, keepdims=True)  # shape [batch_size, 1]
+        # Handle case where max velocity is zero
+        max_velocity_safe = np.where(max_velocity > 0, max_velocity, 1.0)
+        radius = hvo[:, :, 1] / max_velocity_safe  # normalized velocity as radius
     else:
         radius = np.ones_like(hvo[:, :, 1])  # unit radius
 
@@ -278,59 +282,127 @@ def hvo_to_polar_center_of_mass(hvo, use_velocity=False, use_microtiming=False):
     return magnitude, angle_normalized
 
 
-def hvo_polar_comparison(hvo1, hvo2, use_velocity=False, use_microtiming=False):
+def hvo_polar_comparison(hvo1, hvo2):
     """
-    Compare two HVO sequences in polar coordinates using proper vector difference.
+    Compare two HVO sequences using polar coordinate differences.
 
     Args:
         hvo1: np.array of shape [batch_size, 32, 3] - first HVO sequence
         hvo2: np.array of shape [batch_size, 32, 3] - second HVO sequence
-        use_velocity: bool, if True use velocity as radius, else use 1
+
+    Returns:
+        timing_mag_diff: magnitude difference for timing (hvo1 - hvo2, -1 to +1)
+        timing_ang_diff: angle difference for timing (hvo1 - hvo2, -0.5 to +0.5)
+        velocity_mag_diff: magnitude difference for velocity (hvo1 - hvo2, -1 to +1)
+        velocity_ang_diff: angle difference for velocity (hvo1 - hvo2, -0.5 to +0.5)
+
+    Expected Behavior Examples:
+
+    TIMING DIFFERENCES (onset + microtiming, unit radius):
+    - Single onset vs scattered onsets:
+      timing_mag_diff ≈ +0.8 (hvo1 more concentrated)
+    - Scattered onsets vs single onset:
+      timing_mag_diff ≈ -0.8 (hvo1 less concentrated)
+    - Onset at step 0 vs onset at step 8:
+      timing_ang_diff = -0.25 (hvo1 is 90° behind hvo2)
+    - Onset at step 8 vs onset at step 0:
+      timing_ang_diff = +0.25 (hvo1 is 90° ahead of hvo2)
+    - Onsets at opposite positions (step 0 vs step 16):
+      timing_ang_diff = ±0.5 (180° apart, sign depends on shortest path)
+    - Same timing pattern: timing_mag_diff ≈ 0, timing_ang_diff ≈ 0
+
+    VELOCITY DIFFERENCES (onset + velocity weighting, no microtiming):
+    - High velocity (0.8) vs low velocity (0.3) at same position:
+      velocity_mag_diff ≈ +0.5 (hvo1 stronger velocity profile)
+    - Single strong onset vs multiple weak onsets:
+      velocity_mag_diff > 0 (hvo1 more concentrated velocity)
+    - Velocity pattern at step 0 vs step 12:
+      velocity_ang_diff ≈ -0.375 (hvo1 is 135° behind hvo2)
+    - Same velocity pattern: velocity_mag_diff ≈ 0, velocity_ang_diff ≈ 0
+
+    EDGE CASES:
+    - No onsets vs single onset: mag_diff = -1.0
+    - Single onset vs no onsets: mag_diff = +1.0
+    - Floating-point precision near zero: handled with tolerance (returns 0.0)
+
+    INTERPRETATION:
+    - Positive mag_diff: hvo1 has more concentrated/focused pattern
+    - Negative mag_diff: hvo1 has more spread out/diffuse pattern
+    - Positive ang_diff: hvo1's center is counterclockwise from hvo2
+    - Negative ang_diff: hvo1's center is clockwise from hvo2
+    """
+    # Get timing polar coordinates (onset + microtiming, no velocity weighting)
+    mag1_timing, ang1_timing = hvo_to_polar_center_of_mass(hvo1, use_velocity=False, use_microtiming=True)
+    mag2_timing, ang2_timing = hvo_to_polar_center_of_mass(hvo2, use_velocity=False, use_microtiming=True)
+
+    # Get velocity polar coordinates (onset + velocity, no microtiming)
+    mag1_velocity, ang1_velocity = hvo_to_polar_center_of_mass(hvo1, use_velocity=True, use_microtiming=False)
+    mag2_velocity, ang2_velocity = hvo_to_polar_center_of_mass(hvo2, use_velocity=True, use_microtiming=False)
+
+    # Calculate timing differences
+    timing_mag_diff = mag1_timing - mag2_timing
+    timing_ang_diff = ang1_timing - ang2_timing
+    # Handle circular angle difference (shortest path)
+    timing_ang_diff = np.where(timing_ang_diff > 0.5, timing_ang_diff - 1.0, timing_ang_diff)
+    timing_ang_diff = np.where(timing_ang_diff < -0.5, timing_ang_diff + 1.0, timing_ang_diff)
+
+    # Calculate velocity differences
+    velocity_mag_diff = mag1_velocity - mag2_velocity
+    velocity_ang_diff = ang1_velocity - ang2_velocity
+    # Handle circular angle difference (shortest path)
+    velocity_ang_diff = np.where(velocity_ang_diff > 0.5, velocity_ang_diff - 1.0, velocity_ang_diff)
+    velocity_ang_diff = np.where(velocity_ang_diff < -0.5, velocity_ang_diff + 1.0, velocity_ang_diff)
+
+    return timing_mag_diff, timing_ang_diff, velocity_mag_diff, velocity_ang_diff
+
+
+def hvo_combined_polar_center_of_mass(hvo1, hvo2, use_velocity=True, use_microtiming=True):
+    """
+    Combine two HVO sequences on a single z-plane and find their combined center of mass.
+
+    Args:
+        hvo1: np.array of shape [batch_size, 32, 3] - first HVO sequence
+        hvo2: np.array of shape [batch_size, 32, 3] - second HVO sequence
+        use_velocity: bool, if True use velocity as radius (normalized to max), else use 1
         use_microtiming: bool, if True adjust timing with microtiming offset
 
     Returns:
-        mag1: np.array [batch_size] - magnitude of first HVO's center of mass
-        ang1: np.array [batch_size] - angle of first HVO's center of mass (0-1)
-        mag2: np.array [batch_size] - magnitude of second HVO's center of mass
-        ang2: np.array [batch_size] - angle of second HVO's center of mass (0-1)
-        mag_diff: np.array [batch_size] - magnitude of difference vector
-        ang_diff: np.array [batch_size] - angle of difference vector (0-1, representing 0 to 2π)
+        magnitude: np.array [batch_size] - magnitude of combined center of mass (0-1)
+        angle: np.array [batch_size] - angle of combined center of mass (0-1, representing 0 to 2π)
     """
-    # Get polar coordinates for both HVO sequences
-    mag1, ang1 = hvo_to_polar_center_of_mass(hvo1, use_velocity, use_microtiming)
-    mag2, ang2 = hvo_to_polar_center_of_mass(hvo2, use_velocity, use_microtiming)
+    import numpy as np
 
-    # Convert polar coordinates to Cartesian for proper vector arithmetic
-    # Convert normalized angles (0-1) back to radians (0-2π)
+    # Get individual polar coordinates for both HVOs
+    mag1, ang1 = hvo_to_polar_center_of_mass(hvo1, use_velocity=use_velocity, use_microtiming=use_microtiming)
+    mag2, ang2 = hvo_to_polar_center_of_mass(hvo2, use_velocity=use_velocity, use_microtiming=use_microtiming)
+
+    # Convert to Cartesian coordinates
     ang1_rad = ang1 * 2 * np.pi
     ang2_rad = ang2 * 2 * np.pi
 
-    # Convert to Cartesian coordinates
     x1 = mag1 * np.cos(ang1_rad)
     y1 = mag1 * np.sin(ang1_rad)
     x2 = mag2 * np.cos(ang2_rad)
     y2 = mag2 * np.sin(ang2_rad)
 
-    # Calculate vector difference: vector1 - vector2
-    x_diff = x1 - x2
-    y_diff = y1 - y2
+    # Calculate combined center of mass (simple average of the two centers)
+    x_combined = (x1 + x2) / 2.0
+    y_combined = (y1 + y2) / 2.0
 
-    # Convert difference vector back to polar coordinates
-    mag_diff = np.sqrt(x_diff ** 2 + y_diff ** 2)
-    ang_diff_rad = np.arctan2(y_diff, x_diff)
+    # Convert back to polar coordinates
+    magnitude = np.sqrt(x_combined ** 2 + y_combined ** 2)
+    angle_radians = np.arctan2(y_combined, x_combined)
 
-    # Handle floating-point precision errors for difference vector
+    # Handle floating-point precision errors
     tolerance = 1e-10
-    near_zero_mask = mag_diff < tolerance
-    mag_diff[near_zero_mask] = 0.0
-    ang_diff_rad[near_zero_mask] = 0.0
+    near_zero_mask = magnitude < tolerance
+    magnitude[near_zero_mask] = 0.0
+    angle_radians[near_zero_mask] = 0.0
 
-    # Normalize angle back to 0-1 range (0 to 2π)
-    ang_diff = (ang_diff_rad + 2 * np.pi) % (2 * np.pi) / (2 * np.pi)
+    # Normalize angle to 0-1 range (0 to 2π)
+    angle_normalized = (angle_radians + 2 * np.pi) % (2 * np.pi) / (2 * np.pi)
 
-    return mag1, ang1, mag2, ang2, mag_diff, ang_diff
-
-
+    return magnitude, angle_normalized
 
 # ---------- Tokenization of control values into bins ----------
 def tokenize_control_feature_array(
@@ -989,6 +1061,10 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     low = 0.0
                     high = 1.0
                     control_array_ = np.round(features[key], 5)
+                elif "Center of Mass" in key:
+                    low = 0.0
+                    high = 1.0
+                    control_array_ = np.round(features[key], 5)
                 else:
                     available_keys = '\n'.join(features.keys())
                     raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
@@ -1333,64 +1409,40 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             else:
                 features_extracted["Structural Similarity Distance"] = struct_sim.tolist()
 
-        if "Wasserstein Distance" not in data_dict:
-            # Calculated between input grooves and output streams
-            wass_hits = []
-            wass_vels = []
-            wass_uts = []
-
-            for i in range(len(data_dict["input_hvos"])):
-                wass_hits.append(wasserstein_distance(data_dict["input_hvos"][i, :, 0], data_dict["flat_out_hvos"][i, :, 0]))
-                wass_vels.append(wasserstein_distance(data_dict["input_hvos"][i, :, 1], data_dict["flat_out_hvos"][i, :, 1]))
-                wass_uts.append(wasserstein_distance(data_dict["input_hvos"][i, :, 2], data_dict["flat_out_hvos"][i, :, 2]))
-
-            features_extracted["Wasserstein Distance | Hits"] = wass_hits
-            features_extracted["Wasserstein Distance | Velocities"] = wass_vels
-            features_extracted["Wasserstein Distance | Offsets"] = wass_uts
-
         if "Center of Mass" not in data_dict:
-            # Hit Center of Mass
-            h_mag1, h_ang1, h_mag2, h_ang2, h_mag_diff, h_ang_diff = hvo_polar_comparison(
-                data_dict["input_hvos"], data_dict["flat_out_hvos"],
-                use_velocity=False, use_microtiming=False)
-            v_mag1, v_ang1, v_mag2, v_ang2, v_mag_diff, v_ang_diff = hvo_polar_comparison(
-                data_dict["input_hvos"], data_dict["flat_out_hvos"],
-                use_velocity=True, use_microtiming=False)
-            o_mag1, o_ang1, o_mag2, o_ang2, o_mag_diff, o_ang_diff = hvo_polar_comparison(
-                data_dict["input_hvos"], data_dict["flat_out_hvos"],
-                use_velocity=False, use_microtiming=True)
-            hvo_mag1, hvo_ang1, hvo_mag2, hvo_ang2, hvo_mag_diff, hvo_ang_diff = hvo_polar_comparison(
-                data_dict["input_hvos"], data_dict["flat_out_hvos"],
-                use_velocity=True, use_microtiming=True)
+
+            # input CoM
+            input_com_mag, input_com_angle = hvo_to_polar_center_of_mass(
+                hvo = np.array(data_dict["input_hvos"]),
+                use_velocity=True,
+                use_microtiming=True
+            )
+
+            output_com_mag, output_com_angle = hvo_to_polar_center_of_mass(
+                hvo = np.array(data_dict["flat_out_hvos"]),
+                use_velocity=True,
+                use_microtiming=True
+            )
+
+
+            input_with_output_com_mag, input_with_output_com_angle = hvo_combined_polar_center_of_mass(
+                hvo1 = np.array(data_dict["input_hvos"]),
+                hvo2 = np.array(data_dict["flat_out_hvos"]),
+                use_velocity=True,
+                use_microtiming=True
+            )
 
             features_extracted.update({
-                "Hit Center of Mass | Input | Magnitude": h_mag1,
-                "Hit Center of Mass | Input | Angle": h_ang1,
-                "Hit Center of Mass | Output | Magnitude": h_mag2,
-                "Hit Center of Mass | Output | Angle": h_ang2,
-                "Hit Center of Mass | Diff | Magnitude": h_mag_diff,
-                "Hit Center of Mass | Diff | Angle": h_ang_diff,
-                "Velocity Center of Mass | Input | Magnitude": v_mag1,
-                "Velocity Center of Mass | Input | Angle": v_ang1,
-                "Velocity Center of Mass | Output | Magnitude": v_mag2,
-                "Velocity Center of Mass | Output | Angle": v_ang2,
-                "Velocity Center of Mass | Diff | Magnitude": v_mag_diff,
-                "Velocity Center of Mass | Diff | Angle": v_ang_diff,
-                "Offset Center of Mass | Input | Magnitude": o_mag1,
-                "Offset Center of Mass | Input | Angle": o_ang1,
-                "Offset Center of Mass | Output | Magnitude": o_mag2,
-                "Offset Center of Mass | Output | Angle": o_ang2,
-                "Offset Center of Mass | Diff | Magnitude": o_mag_diff,
-                "Offset Center of Mass | Diff | Angle": o_ang_diff,
-                "HVO Center of Mass | Input | Magnitude": hvo_mag1,
-                "HVO Center of Mass | Input | Angle": hvo_ang1,
-                "HVO Center of Mass | Output | Magnitude": hvo_mag2,
-                "HVO Center of Mass | Output | Angle": hvo_ang2,
-                "HVO Center of Mass | Diff | Magnitude": hvo_mag_diff,
-                "HVO Center of Mass | Diff | Angle": hvo_ang_diff
+                "Center of Mass | Input | Magnitude": input_com_mag,
+                "Center of Mass | Input | Angle": input_com_angle,
+                "Center of Mass | Output | Magnitude": output_com_mag,
+                "Center of Mass | Output | Angle": output_com_angle,
+                "Center of Mass | Input + Output | Magnitude": input_with_output_com_mag,
+                "Center of Mass | Input + Output | Angle": input_with_output_com_angle
             })
 
         return features_extracted
+
 
 def get_flexcontrol_triplestream_dataset(
         config,
