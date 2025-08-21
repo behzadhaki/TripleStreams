@@ -19,6 +19,7 @@ import bz2
 import pickle
 import io
 import numpy as np
+from scipy.stats import wasserstein_distance
 
 logging.basicConfig(level=logging.DEBUG)
 dataLoaderLogger = logging.getLogger("dloader")
@@ -26,6 +27,7 @@ dataLoaderLogger = logging.getLogger("dloader")
 
 
 # ------------ helpers: encode/decode arrays as .npy bytes ------------
+
 def _ndarray_to_npy_bytes(arr, allow_pickle=False):
     buf = io.BytesIO()
     # .npy format is versioned & stable; this avoids numpy's pickle reducers
@@ -193,7 +195,145 @@ def map_value_to_bins(value, edges):
 
     print("SHOULD NOT REACH HERE")
 
-def TokenizeControls(
+# --------------- helpers: Center of Mass Extractiors ---------------
+
+def hvo_to_polar_center_of_mass(hvo, use_velocity=False, use_microtiming=False):
+    """
+    Convert HVO sequence to polar coordinates and find center of mass (vectorized).
+
+    Args:
+        hvo: np.array of shape [batch_size, 32, 3] where:
+             - [:, :, 0] = onsets (binary)
+             - [:, :, 1] = velocities (0-1)
+             - [:, :, 2] = microtiming (-0.5 to 0.5)
+        use_velocity: bool, if True use velocity as radius, else use 1
+        use_microtiming: bool, if True adjust timing with microtiming offset
+
+    Returns:
+        magnitude: np.array of shape [batch_size] - magnitude of center of mass (0-1)
+        angle: np.array of shape [batch_size] - angle of center of mass (0-1, representing 0 to 2π)
+    """
+    # Create timestep array for all batches: shape [batch_size, 32]
+    timesteps = np.arange(32)[np.newaxis, :].repeat(hvo.shape[0], axis=0)
+
+    # Calculate actual timing positions
+    actual_timing = timesteps.astype(float)
+    if use_microtiming:
+        actual_timing = actual_timing + hvo[:, :, 2]
+        # Handle wraparound for step 0 with negative microtiming
+        step_0_mask = (timesteps == 0) & (hvo[:, :, 2] < 0)
+        actual_timing[step_0_mask] = 32 + hvo[:, :, 2][step_0_mask]
+        # Ensure timing stays within valid range
+        actual_timing = actual_timing % 32
+
+    # Convert timing to angles (0 to 2π): shape [batch_size, 32]
+    angles = (actual_timing / 32.0) * 2 * np.pi
+
+    # Determine radius for each point: shape [batch_size, 32]
+    if use_velocity:
+        radius = hvo[:, :, 1]  # use velocity as radius
+    else:
+        radius = np.ones_like(hvo[:, :, 1])  # unit radius
+
+    # Convert to Cartesian coordinates: shape [batch_size, 32]
+    x_all = radius * np.cos(angles)
+    y_all = radius * np.sin(angles)
+
+    # Weight by onset strength: shape [batch_size, 32]
+    weights = hvo[:, :, 0]
+
+    # Apply weights to coordinates
+    x_weighted = x_all * weights
+    y_weighted = y_all * weights
+
+    # Calculate center of mass for each batch
+    total_weights = np.sum(weights, axis=1)  # shape [batch_size]
+
+    # Handle case where no onsets exist (avoid division by zero)
+    total_weights_safe = np.where(total_weights > 0, total_weights, 1.0)
+
+    x_center = np.sum(x_weighted, axis=1) / total_weights_safe  # shape [batch_size]
+    y_center = np.sum(y_weighted, axis=1) / total_weights_safe  # shape [batch_size]
+
+    # Set center to (0,0) for batches with no onsets
+    no_onsets_mask = total_weights == 0
+    x_center[no_onsets_mask] = 0.0
+    y_center[no_onsets_mask] = 0.0
+
+    # Convert back to polar coordinates
+    magnitude = np.sqrt(x_center ** 2 + y_center ** 2)
+    angle_radians = np.arctan2(y_center, x_center)
+
+    # Handle floating-point precision errors: if magnitude is essentially zero, set to exactly zero
+    tolerance = 1e-10
+    near_zero_mask = magnitude < tolerance
+    magnitude[near_zero_mask] = 0.0
+
+    # For near-zero magnitudes, set angle to 0 (arbitrary but consistent)
+    angle_radians[near_zero_mask] = 0.0
+
+    # Normalize angle to 0-1 range (0 to 2π)
+    angle_normalized = (angle_radians + 2 * np.pi) % (2 * np.pi) / (2 * np.pi)
+
+    return magnitude, angle_normalized
+
+
+def hvo_polar_comparison(hvo1, hvo2, use_velocity=False, use_microtiming=False):
+    """
+    Compare two HVO sequences in polar coordinates using proper vector difference.
+
+    Args:
+        hvo1: np.array of shape [batch_size, 32, 3] - first HVO sequence
+        hvo2: np.array of shape [batch_size, 32, 3] - second HVO sequence
+        use_velocity: bool, if True use velocity as radius, else use 1
+        use_microtiming: bool, if True adjust timing with microtiming offset
+
+    Returns:
+        mag1: np.array [batch_size] - magnitude of first HVO's center of mass
+        ang1: np.array [batch_size] - angle of first HVO's center of mass (0-1)
+        mag2: np.array [batch_size] - magnitude of second HVO's center of mass
+        ang2: np.array [batch_size] - angle of second HVO's center of mass (0-1)
+        mag_diff: np.array [batch_size] - magnitude of difference vector
+        ang_diff: np.array [batch_size] - angle of difference vector (0-1, representing 0 to 2π)
+    """
+    # Get polar coordinates for both HVO sequences
+    mag1, ang1 = hvo_to_polar_center_of_mass(hvo1, use_velocity, use_microtiming)
+    mag2, ang2 = hvo_to_polar_center_of_mass(hvo2, use_velocity, use_microtiming)
+
+    # Convert polar coordinates to Cartesian for proper vector arithmetic
+    # Convert normalized angles (0-1) back to radians (0-2π)
+    ang1_rad = ang1 * 2 * np.pi
+    ang2_rad = ang2 * 2 * np.pi
+
+    # Convert to Cartesian coordinates
+    x1 = mag1 * np.cos(ang1_rad)
+    y1 = mag1 * np.sin(ang1_rad)
+    x2 = mag2 * np.cos(ang2_rad)
+    y2 = mag2 * np.sin(ang2_rad)
+
+    # Calculate vector difference: vector1 - vector2
+    x_diff = x1 - x2
+    y_diff = y1 - y2
+
+    # Convert difference vector back to polar coordinates
+    mag_diff = np.sqrt(x_diff ** 2 + y_diff ** 2)
+    ang_diff_rad = np.arctan2(y_diff, x_diff)
+
+    # Handle floating-point precision errors for difference vector
+    tolerance = 1e-10
+    near_zero_mask = mag_diff < tolerance
+    mag_diff[near_zero_mask] = 0.0
+    ang_diff_rad[near_zero_mask] = 0.0
+
+    # Normalize angle back to 0-1 range (0 to 2π)
+    ang_diff = (ang_diff_rad + 2 * np.pi) % (2 * np.pi) / (2 * np.pi)
+
+    return mag1, ang1, mag2, ang2, mag_diff, ang_diff
+
+
+
+# ---------- Tokenization of control values into bins ----------
+def tokenize_control_feature_array(
         control_array: np.array,
         n_bins: int,
         low: float = 0,
@@ -234,9 +374,7 @@ def TokenizeControls(
 
     return bin_indices
 
-# ---------------------------------------------------------------------------------------------- #
-# loading a down sampled dataset
-# ---------------------------------------------------------------------------------------------- #
+# ----------- Legacy Dataset Class for Groove2TripleStream2BarDataset -----------
 
 class Groove2TripleStream2BarDataset(Dataset):
 
@@ -383,19 +521,19 @@ class Groove2TripleStream2BarDataset(Dataset):
             # Populate control tokens
             # ------------------------------------------------------------------------------------------
 
-            self.encoding_control1_tokens = TokenizeControls(
+            self.encoding_control1_tokens = tokenize_control_feature_array(
                 control_array=np.round(loaded_data_dictionary[self.encoding_control1_key], 5),
                 n_bins=self.n_encoding_control1_tokens, low=0, high=1)
-            self.encoding_control2_tokens = TokenizeControls(
+            self.encoding_control2_tokens = tokenize_control_feature_array(
                 control_array=np.round(loaded_data_dictionary[self.encoding_control2_key], 5),
                 n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
-            self.decoding_control1_tokens = TokenizeControls(
+            self.decoding_control1_tokens = tokenize_control_feature_array(
                 control_array=np.round(loaded_data_dictionary[self.decoding_control1_key], 5),
                 n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
-            self.decoding_control2_tokens = TokenizeControls(
+            self.decoding_control2_tokens = tokenize_control_feature_array(
                 control_array=np.round(loaded_data_dictionary[self.decoding_control2_key], 5),
                 n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
-            self.decoding_control3_tokens = TokenizeControls(
+            self.decoding_control3_tokens = tokenize_control_feature_array(
                 control_array=np.round(loaded_data_dictionary[self.decoding_control3_key], 5),
                 n_bins=self.n_encoding_control2_tokens, low=0, high=0.85)
 
@@ -664,6 +802,7 @@ def get_triplestream_dataset(
     )
 
 
+# ---------- Latest Dataset Class for flexible management of control values/tokens ----------
 class FlexControlGroove2TripleStream2BarDataset(Dataset):
     """
     Dataset class for FlexControlTripleStreamsVAE that supports flexible control token configurations.
@@ -820,50 +959,50 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 if key == "Flat Out Vs. Input | Hits | Hamming":
                     low = 0.0
                     high = 32.0
-                    control_array = np.round(features[key], 5)
+                    control_array_ = np.round(features[key], 5)
                 elif (key == "Flat Out Vs. Input | Accent | Hamming" or
                       key == "Stream 1 Vs. Flat Out | Hits | Hamming" or
                       key == "Stream 2 Vs. Flat Out | Hits | Hamming" or
                       key == "Stream 3 Vs. Flat Out | Hits | Hamming"):
                     low = 0.0
                     high = 0.85
-                    control_array = np.round(features[key], 5)
+                    control_array_ = np.round(features[key], 5)
                 elif key == "Relative Density":
                     low = 0.0
                     high = 1.0
-                    control_array = np.round(features[key], 5)
+                    control_array_ = np.round(features[key], 5)
                 elif key == "Structural Similarity Distance":
                     low = 0.0
                     high = 1.0
-                    control_array = (np.round(features[key], 5) / 5.6568)
+                    control_array_ = (np.round(features[key], 5) / 5.6568)
                 elif key == "Total Out Hits":
                     low = 0.0
                     high = 96.0
-                    control_array = np.round(features[key], 5)
+                    control_array_ = np.round(features[key], 5)
                 elif key == "Output Step Density":
                     low = 0.0
                     high = 1.0
-                    control_array = np.clip((np.round(features[key], 5) - 1), 0, 3) / (3.0 - 1.0)
+                    control_array_ = np.clip((np.round(features[key], 5) - 1), 0, 3) / (3.0 - 1.0)
                 elif (key == "Stream 1 Relative Density" or
                       key == "Stream 2 Relative Density" or
                       key == "Stream 3 Relative Density"):
                     low = 0.0
                     high = 1.0
-                    control_array = np.round(features[key], 5)
+                    control_array_ = np.round(features[key], 5)
                 else:
                     available_keys = '\n'.join(features.keys())
                     raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
 
                 if n_tokens is None:     # if control arrays are not needed then we wont use the tokens but rather the continuous values.
-                    return control_array, control_array 
+                    return control_array_, control_array_
                 else:
-                    tokens = TokenizeControls(
-                        control_array=control_array,
+                    tokens = tokenize_control_feature_array(
+                        control_array=control_array_,
                         n_bins=n_tokens,
                         low=low,
                         high=high
                     )
-                    return tokens, control_array
+                    return tokens, control_array_
 
             # Create encoding control tokens tensor
             encoding_control_values_list = []
@@ -1170,17 +1309,6 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             features_extracted.update({"Stream 2 Relative Density": (stream_2_hits / total_hits).tolist()})
             features_extracted.update({"Stream 3 Relative Density": (stream_3_hits / total_hits).tolist()})
 
-
-        if "Structural Similarity Distance" not in data_dict:
-            # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
-            flat_in_vels = np.clip(np.array(data_dict["input_hvos"])[:, :, 1], 0, 1)
-            flat_out_vels = np.clip(np.array(data_dict["flat_out_hvos"])[:, :, 1], 0, 1)
-            struct_sim = np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)), 0, 10)
-            if normalize:
-                features_extracted["Structural Similarity Distance"] = (struct_sim / 5.6568).tolist()
-            else:
-                features_extracted["Structural Similarity Distance"] = struct_sim.tolist()
-
         if "Output Step Density" not in data_dict:
             # total onsets divided by the number of steps with at least one onset
             flat_out_hits = np.clip(np.array(data_dict["flat_out_hvos"])[:, :, 0], 0, 1)
@@ -1192,7 +1320,75 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 {"Output Step Density": (total_out_hits / steps_with_at_least_one_onset).tolist()})
 
             if normalize:
-                features_extracted["Output Step Density"] = np.clip((np.round(features_extracted["Output Step Density"], 5) - 1), 0, 3) / (3.0 - 1.0)
+                features_extracted["Output Step Density"] = np.clip(
+                    (np.round(features_extracted["Output Step Density"], 5) - 1), 0, 3) / (3.0 - 1.0)
+
+        if "Structural Similarity Distance" not in data_dict:
+            # reference: https://github.com/fredbru/GrooveToolbox/blob/c73ecfc7bcc7f7bdb69372ea3532fa613c38665a/SimilarityMetrics.py#L108-L119
+            flat_in_vels = np.clip(np.array(data_dict["input_hvos"])[:, :, 1], 0, 1)
+            flat_out_vels = np.clip(np.array(data_dict["flat_out_hvos"])[:, :, 1], 0, 1)
+            struct_sim = np.clip(np.sqrt(np.sum((flat_in_vels - flat_out_vels) ** 2, axis=-1)), 0, 10)
+            if normalize:
+                features_extracted["Structural Similarity Distance"] = (struct_sim / 5.6568).tolist()
+            else:
+                features_extracted["Structural Similarity Distance"] = struct_sim.tolist()
+
+        if "Wasserstein Distance" not in data_dict:
+            # Calculated between input grooves and output streams
+            wass_hits = []
+            wass_vels = []
+            wass_uts = []
+
+            for i in range(len(data_dict["input_hvos"])):
+                wass_hits.append(wasserstein_distance(data_dict["input_hvos"][i, :, 0], data_dict["flat_out_hvos"][i, :, 0]))
+                wass_vels.append(wasserstein_distance(data_dict["input_hvos"][i, :, 1], data_dict["flat_out_hvos"][i, :, 1]))
+                wass_uts.append(wasserstein_distance(data_dict["input_hvos"][i, :, 2], data_dict["flat_out_hvos"][i, :, 2]))
+
+            features_extracted["Wasserstein Distance | Hits"] = wass_hits
+            features_extracted["Wasserstein Distance | Velocities"] = wass_vels
+            features_extracted["Wasserstein Distance | Offsets"] = wass_uts
+
+        if "Center of Mass" not in data_dict:
+            # Hit Center of Mass
+            h_mag1, h_ang1, h_mag2, h_ang2, h_mag_diff, h_ang_diff = hvo_polar_comparison(
+                data_dict["input_hvos"], data_dict["flat_out_hvos"],
+                use_velocity=False, use_microtiming=False)
+            v_mag1, v_ang1, v_mag2, v_ang2, v_mag_diff, v_ang_diff = hvo_polar_comparison(
+                data_dict["input_hvos"], data_dict["flat_out_hvos"],
+                use_velocity=True, use_microtiming=False)
+            o_mag1, o_ang1, o_mag2, o_ang2, o_mag_diff, o_ang_diff = hvo_polar_comparison(
+                data_dict["input_hvos"], data_dict["flat_out_hvos"],
+                use_velocity=False, use_microtiming=True)
+            hvo_mag1, hvo_ang1, hvo_mag2, hvo_ang2, hvo_mag_diff, hvo_ang_diff = hvo_polar_comparison(
+                data_dict["input_hvos"], data_dict["flat_out_hvos"],
+                use_velocity=True, use_microtiming=True)
+
+            features_extracted.update({
+                "Hit Center of Mass | Input | Magnitude": h_mag1,
+                "Hit Center of Mass | Input | Angle": h_ang1,
+                "Hit Center of Mass | Output | Magnitude": h_mag2,
+                "Hit Center of Mass | Output | Angle": h_ang2,
+                "Hit Center of Mass | Diff | Magnitude": h_mag_diff,
+                "Hit Center of Mass | Diff | Angle": h_ang_diff,
+                "Velocity Center of Mass | Input | Magnitude": v_mag1,
+                "Velocity Center of Mass | Input | Angle": v_ang1,
+                "Velocity Center of Mass | Output | Magnitude": v_mag2,
+                "Velocity Center of Mass | Output | Angle": v_ang2,
+                "Velocity Center of Mass | Diff | Magnitude": v_mag_diff,
+                "Velocity Center of Mass | Diff | Angle": v_ang_diff,
+                "Offset Center of Mass | Input | Magnitude": o_mag1,
+                "Offset Center of Mass | Input | Angle": o_ang1,
+                "Offset Center of Mass | Output | Magnitude": o_mag2,
+                "Offset Center of Mass | Output | Angle": o_ang2,
+                "Offset Center of Mass | Diff | Magnitude": o_mag_diff,
+                "Offset Center of Mass | Diff | Angle": o_ang_diff,
+                "HVO Center of Mass | Input | Magnitude": hvo_mag1,
+                "HVO Center of Mass | Input | Angle": hvo_ang1,
+                "HVO Center of Mass | Output | Magnitude": hvo_mag2,
+                "HVO Center of Mass | Output | Angle": hvo_ang2,
+                "HVO Center of Mass | Diff | Magnitude": hvo_mag_diff,
+                "HVO Center of Mass | Diff | Angle": hvo_ang_diff
+            })
 
         return features_extracted
 
