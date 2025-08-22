@@ -878,7 +878,7 @@ def get_triplestream_dataset(
 class FlexControlGroove2TripleStream2BarDataset(Dataset):
     """
     Dataset class for FlexControlTripleStreamsVAE that supports flexible control token configurations.
-    Now supports empty control lists for no-control experiments.
+    Features are cached separately from control tokenization for better flexibility.
     """
 
     def __init__(self,
@@ -910,74 +910,84 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             raise ValueError(
                 f"Mismatch: {len(self.n_decoding_control_tokens)} decoding control tokens vs {len(self.decoding_control_keys)} keys")
 
-        features = {}
-
         def get_source_compiled_data_dictionary_path():
             return os.path.join(self.dataset_root_path, self.subset_tag)
 
-        def get_cached_filepath():
+        def get_cached_features_filepath():
+            """Cache path for features only (not control tokens)"""
             dir_ = os.path.join("cached/TorchDatasets/", self.dataset_root_path.replace("/", "-"), self.subset_tag)
             os.makedirs(dir_, exist_ok=True)
             filename = "".join([df.split("_")[0] for df in self.dataset_files])
-
-            # Create hash for control configuration to ensure cache consistency
-            # Include "no_controls" in hash when lists are empty
-            if len(self.n_encoding_control_tokens) == 0 and len(self.n_decoding_control_tokens) == 0:
-                control_config_str = "no_controls"
-            elif len(self.n_encoding_control_tokens) == 0:
-                control_config_str = f"no_encoding_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
-            elif len(self.n_decoding_control_tokens) == 0:
-                control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_no_decoding"
-            else:
-                control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
-
-            control_hash = hashlib.md5(control_config_str.encode()).hexdigest()[:8]
-
-            filename += f"_flexcontrol_{self.max_len}_{downsampled_size}_{control_hash}"
+            filename += f"_features_{self.max_len}_{downsampled_size}"
             filename = filename.replace(" ", "_").replace("|", "_").replace("/", "_").replace("\\", "_").replace("__",
                                                                                                                  "_").replace(
                 "__", "_")
-
-            filename = filename + ".bz2pickle"
-            if not os.path.exists(dir_):
-                os.makedirs(dir_)
+            filename = filename + "_features.bz2pickle"
             return os.path.join(dir_, filename)
 
-        # check if cached version exists
+        # Load or generate base data and features
         # ------------------------------------------------------------------------------------------
         process_data = True
+        cache_needs_update = False
 
         if use_cached and not force_regenerate:
-            if os.path.exists(get_cached_filepath()):
-                ifile = bz2.BZ2File(get_cached_filepath(), 'rb')
+            cached_features_path = get_cached_features_filepath()
+            if os.path.exists(cached_features_path):
+                if print_logs:
+                    print(f"Loading cached features from: {cached_features_path}")
+
+                ifile = bz2.BZ2File(cached_features_path, 'rb')
                 data = pickle.load(ifile)
                 ifile.close()
 
                 self.input_grooves = data["input_grooves"]
                 self.output_streams = data["output_streams"]
                 self.flat_output_streams = data["flat_output_streams"]
-                self.encoding_controls = data["encoding_controls"]
-                self.decoding_controls = data["decoding_controls"]
-                self.encoding_control_values = data["encoding_control_values"]
-                self.decoding_control_values = data["decoding_control_values"]
                 self.metadata = data["metadata"]
                 self.tempos = data["tempos"]
                 self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
+                features = data["features"]
 
                 process_data = False
 
+                # Check if we need to extract any new features
+                all_control_keys = set(self.encoding_control_keys + self.decoding_control_keys)
+                missing_features = all_control_keys - set(features.keys())
+
+                if missing_features:
+                    if print_logs:
+                        print(f"Missing features detected: {missing_features}")
+                        print("Extracting missing features...")
+
+                    # Create temporary data dict for feature extraction
+                    temp_data_dict = {
+                        "input_hvos": self.input_grooves,
+                        "output_hvos": self.output_streams,
+                        "flat_out_hvos": self.flat_output_streams
+                    }
+
+                    # Extract missing features
+                    new_features = self.extract_features_dict(temp_data_dict)
+
+                    # Add only the missing features
+                    for key in missing_features:
+                        if key in new_features:
+                            features[key] = new_features[key]
+                            if print_logs:
+                                print(f"  Added feature: {key}")
+
+                    cache_needs_update = True
+
         if process_data:
-            # ------------------------------------------------------------------------------------------
-            # load pre-stored hvo_sequences
-            # ------------------------------------------------------------------------------------------
+            if print_logs:
+                print("Processing data from source files...")
+
+            # Load data from source files
             n_samples = 0
             loaded_data_dictionary = {}
 
-            if print_logs:
-                pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files") if len(
-                    self.dataset_files) > 1 else self.dataset_files
-            else:
-                pbar = self.dataset_files
+            pbar = tqdm.tqdm(self.dataset_files, desc="Loading data files") if print_logs and len(
+                self.dataset_files) > 1 else self.dataset_files
 
             for dataset_file in pbar:
                 if not isinstance(pbar, list):
@@ -994,44 +1004,18 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                         loaded_data_dictionary[k].extend(v)
                 n_samples += len(temp["metadata"])
 
-            # Only extract features if we have control keys that require them
-            all_control_keys = set(self.encoding_control_keys + self.decoding_control_keys)
-
-            # Add basic features that are always available
-            if len(all_control_keys) > 0:
-                basic_features = {
-                    "Flat Out Vs. Input | Hits | Hamming",
-                    "Flat Out Vs. Input | Accent | Hamming",
-                    "Stream 1 Vs. Flat Out | Hits | Hamming",
-                    "Stream 2 Vs. Flat Out | Hits | Hamming",
-                    "Stream 3 Vs. Flat Out | Hits | Hamming"
-                }
-
-                for key in basic_features:
-                    if key in loaded_data_dictionary:
-                        features[key] = loaded_data_dictionary[key]
-
-                # Extract additional features only if needed
-                features.update(self.extract_features_dict(loaded_data_dictionary))
-
+            # Downsample if needed
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
                     downsampled_size = None
                 else:
-                    downsampled_size = downsampled_size
+                    sampled_indices = np.random.choice(n_samples, downsampled_size, replace=False)
+                    if print_logs:
+                        print(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
+                    for k, v in loaded_data_dictionary.items():
+                        loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
 
-            # check if only a subset of the data is needed
-            if downsampled_size is not None:
-                sampled_indices = np.random.choice(n_samples, downsampled_size, replace=False)
-                if print_logs:
-                    print(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
-                for k, v in loaded_data_dictionary.items():
-                    loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
-                if len(features) > 0:
-                    features = {k: [v[i] for i in sampled_indices] for k, v in features.items()}
-
-            # Populate already available fields
-            # ------------------------------------------------------------------------------------------
+            # Populate basic fields
             self.input_grooves = np.array(loaded_data_dictionary["input_hvos"])
             self.output_streams = np.array(loaded_data_dictionary["output_hvos"])
             self.flat_output_streams = np.array(loaded_data_dictionary["flat_out_hvos"])
@@ -1039,69 +1023,81 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.tempos = loaded_data_dictionary["qpm"]
             self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
 
-            # Collate and tokenize control tokens - HANDLE EMPTY LISTS
-            # ------------------------------------------------------------------------------------------
-            n_samples = len(self.input_grooves)
+            # Extract all features
+            if print_logs:
+                print("Extracting features...")
+            features = self.extract_features_dict(loaded_data_dictionary)
 
-            # Create encoding control tokens tensor - handle empty case
-            if len(self.encoding_control_keys) == 0:
-                # No encoding controls - create empty tensor with shape (n_samples, 0)
-                self.encoding_control_values = np.empty((n_samples, 0), dtype=np.float32)
-                self.encoding_controls = np.empty((n_samples, 0), dtype=np.float32)
-                if print_logs:
-                    print("No encoding controls specified - using empty tensors")
-            else:
-                encoding_control_values_list = []
-                encoding_tokens_list = []
-                for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
-                    tokens_or_controls, control_array = self.tokenize(features, key, n_tokens)
-                    encoding_tokens_list.append(tokens_or_controls)
-                    encoding_control_values_list.append(control_array)
+            cache_needs_update = True
 
-                self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
-                self.encoding_controls = np.stack(encoding_tokens_list, axis=1)
+        # Update cache if needed
+        # ------------------------------------------------------------------------------------------
+        if use_cached and cache_needs_update:
+            cached_features_path = get_cached_features_filepath()
+            if print_logs:
+                print(f"Updating features cache at: {cached_features_path}")
 
-            # Create decoding control tokens tensor - handle empty case
-            if len(self.decoding_control_keys) == 0:
-                # No decoding controls - create empty tensor with shape (n_samples, 0)
-                self.decoding_control_values = np.empty((n_samples, 0), dtype=np.float32)
-                self.decoding_controls = np.empty((n_samples, 0), dtype=np.float32)
-                if print_logs:
-                    print("No decoding controls specified - using empty tensors")
-            else:
-                decoding_control_values_list = []
-                decoding_tokens_list = []
-                for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
-                    tokens_or_controls, control_array = self.tokenize(features, key, n_tokens)
-                    decoding_tokens_list.append(tokens_or_controls)
-                    decoding_control_values_list.append(control_array)
+            data_to_cache = {
+                "input_grooves": self.input_grooves,
+                "output_streams": self.output_streams,
+                "flat_output_streams": self.flat_output_streams,
+                "metadata": self.metadata,
+                "tempos": self.tempos,
+                "features": features
+            }
 
-                self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
-                self.decoding_controls = np.stack(decoding_tokens_list, axis=1)
+            ofile = bz2.BZ2File(cached_features_path, 'wb')
+            pickle.dump(data_to_cache, ofile)
+            ofile.close()
 
-            # cache the processed data
-            # ------------------------------------------------------------------------------------------
-            if use_cached:
-                if print_logs:
-                    print(f"Caching FlexControl dataset at {get_cached_filepath()}")
-                data_to_dump = {
-                    "input_grooves": self.input_grooves,
-                    "output_streams": self.output_streams,
-                    "flat_output_streams": self.flat_output_streams,
-                    "metadata": self.metadata,
-                    "tempos": self.tempos,
-                    "collection": self.collection,
-                    "encoding_control_values": self.encoding_control_values,
-                    "encoding_controls": self.encoding_controls,
-                    "decoding_control_values": self.decoding_control_values,
-                    "decoding_controls": self.decoding_controls
-                }
+        # Now tokenize controls based on current configuration
+        # ------------------------------------------------------------------------------------------
+        if print_logs:
+            print("Tokenizing controls for current configuration...")
 
-                ofile = bz2.BZ2File(get_cached_filepath(), 'wb')
-                pickle.dump(data_to_dump, ofile)
-                ofile.close()
+        n_samples = len(self.input_grooves)
 
-        # Safety checks - same as before
+        # Create encoding control tokens tensor - handle empty case
+        if len(self.encoding_control_keys) == 0:
+            self.encoding_control_values = np.empty((n_samples, 0), dtype=np.float32)
+            self.encoding_controls = np.empty((n_samples, 0), dtype=np.float32)
+            if print_logs:
+                print("No encoding controls specified - using empty tensors")
+        else:
+            encoding_control_values_list = []
+            encoding_tokens_list = []
+            for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
+                if key not in features:
+                    raise KeyError(
+                        f"Encoding control key '{key}' not found in features. Available: {list(features.keys())}")
+                tokens_or_controls, control_array = self.tokenize(features, key, n_tokens)
+                encoding_tokens_list.append(tokens_or_controls)
+                encoding_control_values_list.append(control_array)
+
+            self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
+            self.encoding_controls = np.stack(encoding_tokens_list, axis=1)
+
+        # Create decoding control tokens tensor - handle empty case
+        if len(self.decoding_control_keys) == 0:
+            self.decoding_control_values = np.empty((n_samples, 0), dtype=np.float32)
+            self.decoding_controls = np.empty((n_samples, 0), dtype=np.float32)
+            if print_logs:
+                print("No decoding controls specified - using empty tensors")
+        else:
+            decoding_control_values_list = []
+            decoding_tokens_list = []
+            for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
+                if key not in features:
+                    raise KeyError(
+                        f"Decoding control key '{key}' not found in features. Available: {list(features.keys())}")
+                tokens_or_controls, control_array = self.tokenize(features, key, n_tokens)
+                decoding_tokens_list.append(tokens_or_controls)
+                decoding_control_values_list.append(control_array)
+
+            self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
+            self.decoding_controls = np.stack(decoding_tokens_list, axis=1)
+
+        # Safety checks and cleanup
         # ------------------------------------------------------------------------------------------
         def get_invalid_indices(hvo):
             n_voices = hvo.shape[-1] // 3
@@ -1115,7 +1111,6 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             return invalid_sample_ix
 
         def get_empty_indices(hvo):
-            # Check for empty samples (all zeros)
             n_voices = hvo.shape[-1] // 3
             empty_indices = np.where(np.all(hvo[:, :, :n_voices] == 0, axis=(1, 2)))[0]
             return empty_indices
@@ -1125,15 +1120,14 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         all_invalid_indices = set(invalid_indices_input).union(set(invalid_indices_output))
         empty_output_indices = set(get_empty_indices(self.output_streams))
 
-        # keep only 99% of empty output indices
+        # Keep only 99% of empty output indices
         if len(empty_output_indices) > 0:
             empty_output_indices = set(
                 np.random.choice(list(empty_output_indices), int(len(empty_output_indices) * 0.99),
                                  replace=False).tolist())
-        # add empty output indices to invalid indices
         all_invalid_indices = all_invalid_indices.union(empty_output_indices)
 
-        # remove invalid samples
+        # Remove invalid samples
         if len(all_invalid_indices) > 0:
             if print_logs:
                 print(f"Found {len(all_invalid_indices)} invalid samples. Removing them.")
@@ -1143,13 +1137,12 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.output_streams = np.delete(self.output_streams, list(all_invalid_indices), axis=0)
             self.flat_output_streams = np.delete(self.flat_output_streams, list(all_invalid_indices), axis=0)
 
-            # Only delete from control arrays if they're not empty
+            # Handle control arrays
             if self.encoding_controls.shape[1] > 0:
                 self.encoding_controls = np.delete(self.encoding_controls, list(all_invalid_indices), axis=0)
                 self.encoding_control_values = np.delete(self.encoding_control_values, list(all_invalid_indices),
                                                          axis=0)
             else:
-                # Recreate empty arrays with correct first dimension
                 n_valid_samples = self.input_grooves.shape[0]
                 self.encoding_controls = np.empty((n_valid_samples, 0), dtype=np.float32)
                 self.encoding_control_values = np.empty((n_valid_samples, 0), dtype=np.float32)
@@ -1159,7 +1152,6 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 self.decoding_control_values = np.delete(self.decoding_control_values, list(all_invalid_indices),
                                                          axis=0)
             else:
-                # Recreate empty arrays with correct first dimension
                 n_valid_samples = self.input_grooves.shape[0]
                 self.decoding_controls = np.empty((n_valid_samples, 0), dtype=np.float32)
                 self.decoding_control_values = np.empty((n_valid_samples, 0), dtype=np.float32)
@@ -1168,6 +1160,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.tempos = [self.tempos[ix] for ix in range(len(self.tempos)) if ix not in all_invalid_indices]
             self.collection = [self.collection[ix] for ix in range(len(self.collection)) if
                                ix not in all_invalid_indices]
+
             if print_logs:
                 print("Size after removing invalid samples: ", self.input_grooves.shape[0])
 
@@ -1182,7 +1175,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.decoding_control_values = torch.tensor(self.decoding_control_values, dtype=torch.float32)
         self.encoding_control_values = torch.tensor(self.encoding_control_values, dtype=torch.float32)
 
-        # Validate tensor shapes
+        # Validate and log tensor shapes
         if print_logs:
             print(f"Final tensor shapes:")
             print(f"  input_grooves: {self.input_grooves.shape}")
@@ -1190,7 +1183,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             print(f"  encoding_controls: {self.encoding_controls.shape}")
             print(f"  decoding_controls: {self.decoding_controls.shape}")
 
-        # move_all_to_cuda
+        # Move to CUDA if requested
         # ------------------------------------------------------------------------------------------
         if move_all_to_cuda and torch.cuda.is_available():
             device = torch.device("cuda")
@@ -1251,7 +1244,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             available_keys = '\n'.join(features.keys())
             raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
 
-        if n_tokens is None:  # if control arrays are not needed then we wont use the tokens but rather the continuous values.
+        if n_tokens is None:
             return control_array_, control_array_
         else:
             tokens = tokenize_control_feature_array(
@@ -1268,11 +1261,10 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
     def __getitem__(self, idx):
         return (self.input_grooves[idx],
                 self.output_streams[idx],
-                self.encoding_controls[idx],  # tensor shape: (n_encoding_control_tokens,) - can be (0,)
-                self.decoding_controls[idx],  # tensor shape: (n_decoding_control_tokens,) - can be (0,)
+                self.encoding_controls[idx],
+                self.decoding_controls[idx],
                 self.metadata[idx],
-                self.indices[idx]
-                )
+                self.indices[idx])
 
     @classmethod
     def from_concatenated_datasets(cls,
@@ -1294,7 +1286,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         individual_downsampled_size = int(
             downsampled_size / len(config["dataset_files"])) if downsampled_size is not None else None
 
-        # Load all individual datasets (these can be cached)
+        # Load all individual datasets
         datasets = []
         pbar = tqdm.tqdm(config["dataset_files"], desc="Loading FlexControl dataset files") if print_logs else config[
             "dataset_files"]
@@ -1310,7 +1302,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 use_cached=use_cached,
                 downsampled_size=individual_downsampled_size,
                 force_regenerate=force_regenerate,
-                move_all_to_cuda=False,  # Don't move individual datasets to CUDA yet
+                move_all_to_cuda=False,
                 print_logs=print_logs
             )
             datasets.append(dataset)
@@ -1402,16 +1394,13 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         flat_out_hvos = np.zeros((hvos.shape[0], hvos.shape[1], 3))
 
         # get hits
-        flat_out_hvos[:, :, 0] = np.clip(np.sum(hvos[:, :, :3], axis=-1), 0,
-                                         1)  # sum hits across streams
+        flat_out_hvos[:, :, 0] = np.clip(np.sum(hvos[:, :, :3], axis=-1), 0, 1)
         # get indices of max velocities
         max_vel_indices = np.argmax(hvos[:, :, 3:6], axis=-1)
         # set flat out velocities based on max velocity indices
-        flat_out_hvos[:, :, 1] = np.take_along_axis(hvos[:, :, 3:6], max_vel_indices[..., None],
-                                                    axis=-1).squeeze(-1)
+        flat_out_hvos[:, :, 1] = np.take_along_axis(hvos[:, :, 3:6], max_vel_indices[..., None], axis=-1).squeeze(-1)
         # use same for offsets
-        flat_out_hvos[:, :, 2] = np.take_along_axis(hvos[:, :, 6:9], max_vel_indices[..., None],
-                                                    axis=-1).squeeze(-1)
+        flat_out_hvos[:, :, 2] = np.take_along_axis(hvos[:, :, 6:9], max_vel_indices[..., None], axis=-1).squeeze(-1)
         return flat_out_hvos
 
     @classmethod
@@ -1426,6 +1415,20 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             data_dict["flat_out_hvos"] = cls.flatten_triple_streams(data_dict["output_hvos"])
 
         features_extracted = {}
+
+        # Basic features that are always extracted
+        basic_features = {
+            "Flat Out Vs. Input | Hits | Hamming",
+            "Flat Out Vs. Input | Accent | Hamming",
+            "Stream 1 Vs. Flat Out | Hits | Hamming",
+            "Stream 2 Vs. Flat Out | Hits | Hamming",
+            "Stream 3 Vs. Flat Out | Hits | Hamming"
+        }
+
+        # Add basic features if they exist in the data dict
+        for feature in basic_features:
+            if feature in data_dict:
+                features_extracted[feature] = data_dict[feature]
 
         # Check if relative hit density is present
         if "Relative Density" not in data_dict or "Total Out Hits" not in data_dict:
@@ -1472,24 +1475,22 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 features_extracted["Structural Similarity Distance"] = struct_sim.tolist()
 
         if "Center of Mass" not in data_dict:
-
             # input CoM
             input_com_mag, input_com_angle = hvo_to_polar_center_of_mass(
-                hvo = np.array(data_dict["input_hvos"]),
+                hvo=np.array(data_dict["input_hvos"]),
                 use_velocity=True,
                 use_microtiming=True
             )
 
             output_com_mag, output_com_angle = hvo_to_polar_center_of_mass(
-                hvo = np.array(data_dict["flat_out_hvos"]),
+                hvo=np.array(data_dict["flat_out_hvos"]),
                 use_velocity=True,
                 use_microtiming=True
             )
 
-
             input_with_output_com_mag, input_with_output_com_angle = hvo_combined_polar_center_of_mass(
-                hvo1 = np.array(data_dict["input_hvos"]),
-                hvo2 = np.array(data_dict["flat_out_hvos"]),
+                hvo1=np.array(data_dict["input_hvos"]),
+                hvo2=np.array(data_dict["flat_out_hvos"]),
                 use_velocity=True,
                 use_microtiming=True
             )
@@ -1517,6 +1518,7 @@ def get_flexcontrol_triplestream_dataset(
     """
     Get FlexControl dataset that returns control tokens as tensors instead of individual tokens.
     Now supports empty control configurations for no-control experiments.
+    Features are cached separately from control tokenization for better flexibility.
     """
 
     try:
