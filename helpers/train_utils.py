@@ -469,7 +469,7 @@ def save_model_checkpoint_enhanced(model, optimizer, beta_scheduler, step, save_
 
 
 def calculate_hit_loss_with_diversity(hit_logits, hit_targets, hit_loss_function, metrical_profile=None,
-                                      use_hit_mask=False, diversity_boost=1.5):
+                                      use_hit_mask=False, diversity_boost=1.2):
     """
     Calculate hit loss with diversity-encouraging metrical weighting.
 
@@ -483,7 +483,7 @@ def calculate_hit_loss_with_diversity(hit_logits, hit_targets, hit_loss_function
         hit_loss_function: Loss function (BCEWithLogitsLoss, FocalLoss, or DiceLoss)
         metrical_profile: Optional metrical strength profile for diversity weighting
         use_hit_mask: Whether to apply hit-to-silence ratio weighting
-        diversity_boost: Multiplier for weak beat attention (e.g., 1.5 = 50% more attention to weak beats)
+        diversity_boost: Multiplier for weak beat attention (e.g., 1.2 = 50% more attention to weak beats)
 
     Returns:
         loss_h: Computed loss
@@ -537,8 +537,8 @@ def calculate_hit_loss_with_diversity(hit_logits, hit_targets, hit_loss_function
             # Strong beats (strength 3,4,5) get normal attention to maintain musical structure
             diversity_weights = torch.where(
                 metrical_weights <= 2,  # Weak beats
-                diversity_boost,  # Extra attention (e.g., 1.5x)
-                1.0  # Normal attention for strong beats
+                diversity_boost,  # Extra attention (e.g., 1.2x)
+                0.9  # slightly lower attention for strong beats
             )
 
             # Normalize so the mean weight is approximately 1 (for training stability)
@@ -674,7 +674,7 @@ def calculate_metrical_diversity_regularization(hit_logits, diversity_weight=0.1
 def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
                          optimizer=None, starting_step=0, beta_scheduler=None,
                          scale_h_loss=1.0, scale_v_loss=1.0, scale_o_loss=1.0,
-                         diversity_boost=1.5, diversity_weight=0.1,
+                         diversity_boost=1.2, diversity_weight=0.1,
                          log_frequency=100, eval_callbacks=None, is_training=True, wandb_log=True):
     """
     Enhanced step-based batch loop with diversity-encouraging loss calculations and unified gradient flow.
@@ -686,7 +686,7 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
     - Hit-aware velocity/offset loss weighting
 
     Args:
-        diversity_boost: Multiplier for weak beat attention (1.2-2.0, default 1.5)
+        diversity_boost: Multiplier for weak beat attention (1.2-2.0, default 1.2)
         diversity_weight: Weight for global diversity regularization (0.05-0.2, default 0.1)
         ... (other parameters same as original batch_loop_step_based)
     """
