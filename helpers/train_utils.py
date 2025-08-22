@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import tqdm
+import wandb
 
 from logging import getLogger
 
@@ -467,23 +468,33 @@ def save_model_checkpoint_enhanced(model, optimizer, beta_scheduler, step, save_
     return {}
 
 
-def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_profile=None, use_hit_mask=False):
+def calculate_hit_loss_with_diversity(hit_logits, hit_targets, hit_loss_function, metrical_profile=None,
+                                      use_hit_mask=False, diversity_boost=1.5):
     """
-    Calculate hit loss with optional inverse metrical weighting.
+    Calculate hit loss with diversity-encouraging metrical weighting.
+
+    This implementation encourages rhythmic diversity by giving extra attention to weak metrical
+    positions during training, helping the model learn to place hits on syncopated positions
+    rather than only on strong beats.
 
     Args:
         hit_logits: Model logits for hit prediction
         hit_targets: Target hit labels
         hit_loss_function: Loss function (BCEWithLogitsLoss, FocalLoss, or DiceLoss)
-        metrical_profile: Optional metrical strength profile for inverse weighting
+        metrical_profile: Optional metrical strength profile for diversity weighting
+        use_hit_mask: Whether to apply hit-to-silence ratio weighting
+        diversity_boost: Multiplier for weak beat attention (e.g., 1.5 = 50% more attention to weak beats)
 
     Returns:
         loss_h: Computed loss
         hit_mask: Applied weighting mask
+
+    Note:
+        Unlike inverse weighting (which reduces learning on strong beats), diversity weighting
+        maintains normal learning on strong beats while boosting attention to weak beats,
+        encouraging the model to learn both strong and weak beat patterns effectively.
     """
     # Longuet-Higgins & Lee (1984) metrical profile for 4/4 time
-    # "The Rhythmic Interpretation of Monophonic Music"
-    # Cognitive Science, 8(2), 107-123
     # 32nd note resolution over 2 bars of 4/4 time
     LONGUET_HIGGINS_LEE_PROFILE = [
         5, 1, 2, 1, 3, 1, 2, 1, 4, 1, 2, 1, 3, 1, 2, 1,  # Bar 1
@@ -492,22 +503,21 @@ def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_prof
 
     assert isinstance(hit_loss_function, torch.nn.BCEWithLogitsLoss) or isinstance(hit_loss_function,
                                                                                    FocalLoss) or isinstance(
-        hit_loss_function,
-        DiceLoss), f"hit_loss_function must be an instance of torch.nn.BCEWithLogitsLoss or FocalLoss or DiceLoss. Got {type(hit_loss_function)}"
+        hit_loss_function, DiceLoss), \
+        f"hit_loss_function must be an instance of torch.nn.BCEWithLogitsLoss or FocalLoss or DiceLoss. Got {type(hit_loss_function)}"
 
     loss_h = hit_loss_function(hit_logits, hit_targets)
 
     # Base weighting: put more weight on the hits
-    hit_to_silence_ration = 2.0
-    hit_mask = (hit_targets > 0).float() * hit_to_silence_ration + 1 if use_hit_mask else None  # hits weighted ~3x more than misses
+    hit_to_silence_ratio = 2.0
+    hit_mask = (hit_targets > 0).float() * hit_to_silence_ratio + 1 if use_hit_mask else None
 
     if hit_loss_function.reduction == 'none':
-
         # Use default profile if none provided
         if metrical_profile is None:
             metrical_profile = LONGUET_HIGGINS_LEE_PROFILE
 
-        # Add inverse metrical weighting
+        # Add diversity-encouraging metrical weighting
         if metrical_profile is not None:
             # Convert to tensor and match the sequence length
             metrical_weights = torch.tensor(metrical_profile, dtype=torch.float32, device=hit_targets.device)
@@ -522,21 +532,36 @@ def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_prof
                     metrical_weights[:remainder]
                 ])
 
-            # Inverse weighting: higher metrical strength = lower weight
-            # Metrical strengths: 5 (downbeat) → 0.2 weight, 1 (weak) → 1.0 weight
-            inverse_metrical_weights = 1.0 / (metrical_weights + 1e-8)
+            # DIVERSITY WEIGHTING: Boost attention to weak beats instead of reducing strong beats
+            # Weak beats (strength 1,2) get extra attention to learn diverse syncopated patterns
+            # Strong beats (strength 3,4,5) get normal attention to maintain musical structure
+            diversity_weights = torch.where(
+                metrical_weights <= 2,  # Weak beats
+                diversity_boost,  # Extra attention (e.g., 1.5x)
+                1.0  # Normal attention for strong beats
+            )
 
-            # Normalize so the mean weight is 1 (for training stability)
-            inverse_metrical_weights = inverse_metrical_weights / inverse_metrical_weights.mean()
+            # Normalize so the mean weight is approximately 1 (for training stability)
+            diversity_weights = diversity_weights / diversity_weights.mean()
 
-            # Apply metrical weighting
-            hit_mask = hit_mask * inverse_metrical_weights if hit_mask is not None else inverse_metrical_weights
+            # Apply diversity weighting
+            hit_mask = hit_mask * diversity_weights if hit_mask is not None else diversity_weights
 
         loss_h = loss_h * hit_mask
         loss_h = loss_h.mean()
 
     return loss_h, hit_mask
 
+
+# Keep original method for backward compatibility
+def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_profile=None, use_hit_mask=False):
+    """
+    Original hit loss calculation method - kept for backward compatibility.
+    For new implementations, consider using calculate_hit_loss_with_diversity() instead.
+    """
+    return calculate_hit_loss_with_diversity(
+        hit_logits, hit_targets, hit_loss_function, metrical_profile, use_hit_mask, diversity_boost=1.0
+    )
 
 def calculate_velocity_loss(vel_logits, vel_targets, vel_loss_function, hit_mask=None):
     vel_activated = torch.tanh(vel_logits)
@@ -572,42 +597,108 @@ def calculate_kld_loss(mu, log_var, free_bits=4.0):
     return kld_loss.mean()
 
 
+def calculate_metrical_diversity_regularization(hit_logits, diversity_weight=0.1, metrical_profile=None):
+    """
+    Regularization term that encourages hits to be distributed across different metrical strengths.
+
+    This global constraint complements local diversity weighting by ensuring the model's
+    overall output maintains rhythmic variety across all metrical positions, preventing
+    over-concentration on any single metrical strength level.
+
+    Args:
+        hit_logits: Model hit predictions [batch, seq_len, voices]
+        diversity_weight: Weight for the diversity loss term (typically 0.05-0.2)
+        metrical_profile: Metrical strength profile for 4/4 time
+
+    Returns:
+        diversity_loss: Regularization loss encouraging balanced metrical distribution
+
+    Note:
+        This works by maximizing entropy across metrical strength levels. High entropy
+        (~1.6 for uniform distribution) indicates good rhythmic diversity, while low
+        entropy (~0.5) indicates over-concentration on strong beats.
+
+    Implementation:
+        - Local diversity weighting: "Be better at weak beat recognition"
+        - Global diversity regularization: "Actually use that weak beat skill"
+    """
+    LONGUET_HIGGINS_LEE_PROFILE = [
+        5, 1, 2, 1, 3, 1, 2, 1, 4, 1, 2, 1, 3, 1, 2, 1,  # Bar 1
+        5, 1, 2, 1, 3, 1, 2, 1, 4, 1, 2, 1, 3, 1, 2, 1  # Bar 2
+    ]
+
+    if metrical_profile is None:
+        metrical_profile = LONGUET_HIGGINS_LEE_PROFILE
+
+    hit_probs = torch.sigmoid(hit_logits)  # [batch, seq_len, voices]
+
+    # Create metrical strength tensor
+    metrical_tensor = torch.tensor(
+        metrical_profile,
+        dtype=torch.float32,
+        device=hit_logits.device
+    )
+
+    # Tile to match sequence length
+    seq_len = hit_logits.shape[1]
+    if len(metrical_tensor) != seq_len:
+        repeat_factor = seq_len // len(metrical_tensor)
+        remainder = seq_len % len(metrical_tensor)
+        metrical_tensor = torch.cat([
+            metrical_tensor.repeat(repeat_factor),
+            metrical_tensor[:remainder]
+        ])
+
+    diversity_loss = 0
+    for voice_idx in range(hit_logits.shape[2]):  # For each voice/instrument
+        voice_hits = hit_probs[:, :, voice_idx]  # [batch, seq_len]
+
+        # Calculate weighted hit density for each metrical strength level
+        metrical_densities = []
+        for strength in [1, 2, 3, 4, 5]:  # Each metrical level (weak to strong)
+            strength_mask = (metrical_tensor == strength).float()
+            strength_density = (voice_hits * strength_mask).sum(dim=1) / (strength_mask.sum() + 1e-8)
+            metrical_densities.append(strength_density)
+
+        # Stack densities: [batch, 5_metrical_levels]
+        densities = torch.stack(metrical_densities, dim=1)
+
+        # Encourage uniform distribution across metrical levels using entropy maximization
+        # Higher entropy = more diverse rhythmic placement
+        densities_normalized = torch.softmax(densities + 1e-8, dim=1)
+        entropy = -(densities_normalized * torch.log(densities_normalized + 1e-8)).sum(dim=1)
+        diversity_loss += -entropy.mean()  # Negative because we want to maximize entropy
+
+    return diversity_loss * diversity_weight
+
 def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
-                          optimizer=None, starting_step=0, beta_scheduler=None,
-                          scale_h_loss=1.0, scale_v_loss=1.0, scale_o_loss=1.0,
-                          log_frequency=100, eval_callbacks=None, is_training=True, wandb_log=True):
+                         optimizer=None, starting_step=0, beta_scheduler=None,
+                         scale_h_loss=1.0, scale_v_loss=1.0, scale_o_loss=1.0,
+                         diversity_boost=1.5, diversity_weight=0.1,
+                         log_frequency=100, eval_callbacks=None, is_training=True, wandb_log=True):
     """
-    Step-based batch loop with integrated logging and evaluation callbacks
+    Enhanced step-based batch loop with diversity-encouraging loss calculations and unified gradient flow.
 
-    :param dataloader_: torch.utils.data.DataLoader for the dataset
-    :param forward_method: function that handles model forward pass
-    :param hit_loss_fn: loss function for hits
-    :param velocity_loss_fn: loss function for velocities
-    :param offset_loss_fn: loss function for offsets
-    :param optimizer: optimizer for training (None for evaluation)
-    :param starting_step: initial step count
-    :param beta_scheduler: BetaAnnealingScheduler instance
-    :param scale_h_loss: scaling factor for hit loss
-    :param scale_v_loss: scaling factor for velocity loss
-    :param scale_o_loss: scaling factor for offset loss
-    :param log_frequency: how often to log metrics to wandb
-    :param eval_callbacks: dict of evaluation functions to run at specified frequencies
-    :param is_training: whether this is training or evaluation
-    :param wandb_log: whether to log to wandb
-    :return: metrics dict and final step count
+    Key improvements:
+    - Unified gradient flow (single backward pass) for balanced multi-task learning
+    - Diversity-encouraging metrical weighting for rhythmic variety
+    - Global metrical diversity regularization
+    - Hit-aware velocity/offset loss weighting
+
+    Args:
+        diversity_boost: Multiplier for weak beat attention (1.2-2.0, default 1.5)
+        diversity_weight: Weight for global diversity regularization (0.05-0.2, default 0.1)
+        ... (other parameters same as original batch_loop_step_based)
     """
-    import wandb
-
-    # Prepare metric trackers
+    # Prepare metric trackers - add diversity tracking
     step_metrics = {
         'loss_total': [], 'loss_h': [], 'loss_v': [], 'loss_o': [],
-        'loss_KL': [], 'loss_recon': [], 'kl_beta': []
+        'loss_KL': [], 'loss_recon': [], 'kl_beta': [], 'diversity_loss': []
     }
 
     total_batches = len(dataloader_)
     current_step = starting_step
 
-    # Default evaluation callbacks if none provided
     if eval_callbacks is None:
         eval_callbacks = {}
 
@@ -629,10 +720,21 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
         # Prepare targets for loss calculation
         h_targets, v_targets, o_targets = torch.split(target_outputs, int(target_outputs.shape[2] / 3), 2)
 
-        # Compute losses
-        batch_loss_h, hit_mask = calculate_hit_loss(
-            hit_logits=h_logits, hit_targets=h_targets, hit_loss_function=hit_loss_fn)
+        # Compute improved losses with diversity enhancements
+        batch_loss_h, hit_mask = calculate_hit_loss_with_diversity(
+            hit_logits=h_logits,
+            hit_targets=h_targets,
+            hit_loss_function=hit_loss_fn,
+            use_hit_mask=True,
+            diversity_boost=diversity_boost
+        )
         batch_loss_h = batch_loss_h * scale_h_loss
+
+        # Add metrical diversity regularization
+        diversity_loss = calculate_metrical_diversity_regularization(
+            hit_logits=h_logits,
+            diversity_weight=diversity_weight
+        )
 
         batch_loss_v = calculate_velocity_loss(
             vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn,
@@ -645,31 +747,28 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
         batch_loss_KL = calculate_kld_loss(mu, log_var)
         batch_loss_KL_Beta_Scaled = batch_loss_KL * kl_beta
 
-        # Backpropagation (only if training)
+        # Unified gradient flow with diversity regularization
         if optimizer is not None:
             optimizer.zero_grad()
-            # (batch_loss_h + batch_loss_KL_Beta_Scaled).backward(retain_graph=True)
-            # batch_loss_v.backward(retain_graph=True)
-            # batch_loss_o.backward(retain_graph=True)
-
-            total_loss = batch_loss_h + batch_loss_v + batch_loss_o + batch_loss_KL_Beta_Scaled
+            total_loss = batch_loss_h + batch_loss_v + batch_loss_o + batch_loss_KL_Beta_Scaled + diversity_loss
             total_loss.backward()
-
             optimizer.step()
 
-        # Store metrics
+        # Store metrics including diversity
         current_loss_h = batch_loss_h.item()
         current_loss_v = batch_loss_v.item()
         current_loss_o = batch_loss_o.item()
         current_loss_KL = batch_loss_KL.item()
+        current_diversity_loss = diversity_loss.item()
         current_loss_recon = current_loss_h + current_loss_v + current_loss_o
-        current_loss_total = current_loss_recon + batch_loss_KL_Beta_Scaled.item()
+        current_loss_total = current_loss_recon + batch_loss_KL_Beta_Scaled.item() + current_diversity_loss
 
         # Add to running averages
         step_metrics['loss_h'].append(current_loss_h)
         step_metrics['loss_v'].append(current_loss_v)
         step_metrics['loss_o'].append(current_loss_o)
         step_metrics['loss_KL'].append(current_loss_KL)
+        step_metrics['diversity_loss'].append(current_diversity_loss)
         step_metrics['loss_recon'].append(current_loss_recon)
         step_metrics['loss_total'].append(current_loss_total)
         step_metrics['kl_beta'].append(kl_beta)
@@ -703,12 +802,12 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
             "l_v": f"{current_loss_v:.4f}",
             "l_o": f"{current_loss_o:.4f}",
             "l_KL": f"{current_loss_KL:.4f}",
+            "l_div": f"{current_diversity_loss:.4f}",
         })
 
         # Only increment step counter during training
         if is_training:
             current_step += 1
-            # Only increment beta scheduler during training
             if beta_scheduler is not None:
                 beta_scheduler.step()
 
@@ -719,11 +818,11 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
         f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_v": np.mean(step_metrics['loss_v']),
         f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_o": np.mean(step_metrics['loss_o']),
         f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_KL": np.mean(step_metrics['loss_KL']),
+        f"{'Train' if is_training else 'Test'}_Epoch_Metrics/diversity_loss": np.mean(step_metrics['diversity_loss']),
         f"{'Train' if is_training else 'Test'}_Epoch_Metrics/loss_recon": np.mean(step_metrics['loss_recon'])
     }
 
     return aggregated_metrics, current_step
-
 
 def train_loop_step_based(train_dataloader, forward_method, optimizer, hit_loss_fn, velocity_loss_fn, offset_loss_fn,
                           starting_step, beta_scheduler, scale_h_loss, scale_v_loss, scale_o_loss,
