@@ -475,9 +475,9 @@ if __name__ == "__main__":
     model_on_device = model_cpu.to(config.device)
 
     # Instantiate loss functions and optimizer
-    hit_loss_fn = torch.nn.BCEWithLogitsLoss(reduction='none')
-    velocity_loss_fn = torch.nn.MSELoss(reduction='none')
-    offset_loss_fn = torch.nn.MSELoss(reduction='none')
+    hit_loss_fn = torch.nn.BCEWithLogitsLoss(reduction='mean')
+    velocity_loss_fn = torch.nn.MSELoss(reduction='mean')
+    offset_loss_fn = torch.nn.MSELoss(reduction='mean')
 
     if config.optimizer == 'adam':
         optimizer = torch.optim.Adam(model_on_device.parameters(), lr=config.lr)
