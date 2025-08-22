@@ -878,6 +878,7 @@ def get_triplestream_dataset(
 class FlexControlGroove2TripleStream2BarDataset(Dataset):
     """
     Dataset class for FlexControlTripleStreamsVAE that supports flexible control token configurations.
+    Now supports empty control lists for no-control experiments.
     """
 
     def __init__(self,
@@ -894,11 +895,21 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.subset_tag = subset_tag
         self.max_len = config["max_len"]
 
-        # Flexible control configuration
-        self.n_encoding_control_tokens = config["n_encoding_control_tokens"]
-        self.encoding_control_keys = config["encoding_control_keys"]
-        self.n_decoding_control_tokens = config["n_decoding_control_tokens"]
-        self.decoding_control_keys = config["decoding_control_keys"]
+        # Flexible control configuration - handle empty lists
+        self.n_encoding_control_tokens = config.get("n_encoding_control_tokens", [])
+        self.encoding_control_keys = config.get("encoding_control_keys", [])
+        self.n_decoding_control_tokens = config.get("n_decoding_control_tokens", [])
+        self.decoding_control_keys = config.get("decoding_control_keys", [])
+
+        # Validate control configuration consistency
+        if len(self.n_encoding_control_tokens) != len(self.encoding_control_keys):
+            raise ValueError(
+                f"Mismatch: {len(self.n_encoding_control_tokens)} encoding control tokens vs {len(self.encoding_control_keys)} keys")
+
+        if len(self.n_decoding_control_tokens) != len(self.decoding_control_keys):
+            raise ValueError(
+                f"Mismatch: {len(self.n_decoding_control_tokens)} decoding control tokens vs {len(self.decoding_control_keys)} keys")
+
         features = {}
 
         def get_source_compiled_data_dictionary_path():
@@ -910,7 +921,16 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             filename = "".join([df.split("_")[0] for df in self.dataset_files])
 
             # Create hash for control configuration to ensure cache consistency
-            control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
+            # Include "no_controls" in hash when lists are empty
+            if len(self.n_encoding_control_tokens) == 0 and len(self.n_decoding_control_tokens) == 0:
+                control_config_str = "no_controls"
+            elif len(self.n_encoding_control_tokens) == 0:
+                control_config_str = f"no_encoding_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
+            elif len(self.n_decoding_control_tokens) == 0:
+                control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_no_decoding"
+            else:
+                control_config_str = f"{self.n_encoding_control_tokens}_{self.encoding_control_keys}_{self.n_decoding_control_tokens}_{self.decoding_control_keys}"
+
             control_hash = hashlib.md5(control_config_str.encode()).hexdigest()[:8]
 
             filename += f"_flexcontrol_{self.max_len}_{downsampled_size}_{control_hash}"
@@ -974,26 +994,31 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                         loaded_data_dictionary[k].extend(v)
                 n_samples += len(temp["metadata"])
 
-            features.update(
-                {"Flat Out Vs. Input | Hits | Hamming": loaded_data_dictionary["Flat Out Vs. Input | Hits | Hamming"]})
-            features.update({"Flat Out Vs. Input | Accent | Hamming": loaded_data_dictionary[
-                "Flat Out Vs. Input | Accent | Hamming"]})
-            features.update({"Stream 1 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary[
-                "Stream 1 Vs. Flat Out | Hits | Hamming"]})
-            features.update({"Stream 2 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary[
-                "Stream 2 Vs. Flat Out | Hits | Hamming"]})
-            features.update({"Stream 3 Vs. Flat Out | Hits | Hamming": loaded_data_dictionary[
-                "Stream 3 Vs. Flat Out | Hits | Hamming"]})
+            # Only extract features if we have control keys that require them
+            all_control_keys = set(self.encoding_control_keys + self.decoding_control_keys)
 
-            features.update(self.extract_features_dict(loaded_data_dictionary))
+            # Add basic features that are always available
+            if len(all_control_keys) > 0:
+                basic_features = {
+                    "Flat Out Vs. Input | Hits | Hamming",
+                    "Flat Out Vs. Input | Accent | Hamming",
+                    "Stream 1 Vs. Flat Out | Hits | Hamming",
+                    "Stream 2 Vs. Flat Out | Hits | Hamming",
+                    "Stream 3 Vs. Flat Out | Hits | Hamming"
+                }
+
+                for key in basic_features:
+                    if key in loaded_data_dictionary:
+                        features[key] = loaded_data_dictionary[key]
+
+                # Extract additional features only if needed
+                features.update(self.extract_features_dict(loaded_data_dictionary))
 
             if downsampled_size is not None:
                 if downsampled_size >= n_samples:
                     downsampled_size = None
                 else:
                     downsampled_size = downsampled_size
-            else:
-                downsampled_size = downsampled_size
 
             # check if only a subset of the data is needed
             if downsampled_size is not None:
@@ -1002,7 +1027,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                     print(f"Downsizing by selecting {downsampled_size} from {n_samples} samples")
                 for k, v in loaded_data_dictionary.items():
                     loaded_data_dictionary[k] = [v[ix] for ix in sampled_indices]
-                features = {k: [v[i] for i in sampled_indices] for k, v in features.items()}
+                if len(features) > 0:
+                    features = {k: [v[i] for i in sampled_indices] for k, v in features.items()}
 
             # Populate already available fields
             # ------------------------------------------------------------------------------------------
@@ -1013,96 +1039,45 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.tempos = loaded_data_dictionary["qpm"]
             self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
 
-            # Collate and tokenize control tokens
+            # Collate and tokenize control tokens - HANDLE EMPTY LISTS
             # ------------------------------------------------------------------------------------------
-            # Populate flexible control tokens
-            # ------------------------------------------------------------------------------------------
-            n_encoding_control_tokens = len(self.encoding_control_keys)
-            n_decoding_control_tokens = len(self.decoding_control_keys)
+            n_samples = len(self.input_grooves)
 
+            # Create encoding control tokens tensor - handle empty case
+            if len(self.encoding_control_keys) == 0:
+                # No encoding controls - create empty tensor with shape (n_samples, 0)
+                self.encoding_control_values = np.empty((n_samples, 0), dtype=np.float32)
+                self.encoding_controls = np.empty((n_samples, 0), dtype=np.float32)
+                if print_logs:
+                    print("No encoding controls specified - using empty tensors")
+            else:
+                encoding_control_values_list = []
+                encoding_tokens_list = []
+                for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
+                    tokens_or_controls, control_array = self.tokenize(features, key, n_tokens)
+                    encoding_tokens_list.append(tokens_or_controls)
+                    encoding_control_values_list.append(control_array)
 
-            def tokenize(features, key, n_tokens):
-                if isinstance(n_tokens, str):
-                    if n_tokens.lower() == "none":
-                        n_tokens = None
-                    else:
-                        assert isinstance(n_tokens, int), f"n_tokens should be an int or 'None', got {n_tokens}"
+                self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
+                self.encoding_controls = np.stack(encoding_tokens_list, axis=1)
 
-                if key == "Flat Out Vs. Input | Hits | Hamming":
-                    low = 0.0
-                    high = 32.0
-                    control_array_ = np.round(features[key], 5)
-                elif (key == "Flat Out Vs. Input | Accent | Hamming" or
-                      key == "Stream 1 Vs. Flat Out | Hits | Hamming" or
-                      key == "Stream 2 Vs. Flat Out | Hits | Hamming" or
-                      key == "Stream 3 Vs. Flat Out | Hits | Hamming"):
-                    low = 0.0
-                    high = 0.85
-                    control_array_ = np.round(features[key], 5)
-                elif key == "Relative Density":
-                    low = 0.0
-                    high = 1.0
-                    control_array_ = np.round(features[key], 5)
-                elif key == "Structural Similarity Distance":
-                    low = 0.0
-                    high = 1.0
-                    control_array_ = (np.round(features[key], 5) / 5.6568)
-                elif key == "Total Out Hits":
-                    low = 0.0
-                    high = 96.0
-                    control_array_ = np.round(features[key], 5)
-                elif key == "Output Step Density":
-                    low = 0.0
-                    high = 1.0
-                    control_array_ = np.clip((np.round(features[key], 5) - 1), 0, 3) / (3.0 - 1.0)
-                elif (key == "Stream 1 Relative Density" or
-                      key == "Stream 2 Relative Density" or
-                      key == "Stream 3 Relative Density"):
-                    low = 0.0
-                    high = 1.0
-                    control_array_ = np.round(features[key], 5)
-                elif "Center of Mass" in key:
-                    low = 0.0
-                    high = 1.0
-                    control_array_ = np.round(features[key], 5)
-                else:
-                    available_keys = '\n'.join(features.keys())
-                    raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
+            # Create decoding control tokens tensor - handle empty case
+            if len(self.decoding_control_keys) == 0:
+                # No decoding controls - create empty tensor with shape (n_samples, 0)
+                self.decoding_control_values = np.empty((n_samples, 0), dtype=np.float32)
+                self.decoding_controls = np.empty((n_samples, 0), dtype=np.float32)
+                if print_logs:
+                    print("No decoding controls specified - using empty tensors")
+            else:
+                decoding_control_values_list = []
+                decoding_tokens_list = []
+                for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
+                    tokens_or_controls, control_array = self.tokenize(features, key, n_tokens)
+                    decoding_tokens_list.append(tokens_or_controls)
+                    decoding_control_values_list.append(control_array)
 
-                if n_tokens is None:     # if control arrays are not needed then we wont use the tokens but rather the continuous values.
-                    return control_array_, control_array_
-                else:
-                    tokens = tokenize_control_feature_array(
-                        control_array=control_array_,
-                        n_bins=n_tokens,
-                        low=low,
-                        high=high
-                    )
-                    return tokens, control_array_
-
-            # Create encoding control tokens tensor
-            encoding_control_values_list = []
-            encoding_tokens_list = []
-            for i, (key, n_tokens) in enumerate(zip(self.encoding_control_keys, self.n_encoding_control_tokens)):
-                tokens_or_controls, control_array = tokenize(features, key, n_tokens)
-                encoding_tokens_list.append(tokens_or_controls)
-                encoding_control_values_list.append(control_array)
-            # Stack encoding tokens: shape (n_samples, n_encoding_control_tokens)
-            self.encoding_control_values = np.stack(encoding_control_values_list, axis=1)
-            self.encoding_controls = np.stack(encoding_tokens_list,
-                                                    axis=1)  # Shape (n_samples, n_encoding_control_tokens)
-
-            # Create decoding control tokens tensor
-            decoding_control_values_list = []
-            decoding_tokens_list = []
-            for i, (key, n_tokens) in enumerate(zip(self.decoding_control_keys, self.n_decoding_control_tokens)):
-                tokens_or_controls, control_array = tokenize(features, key, n_tokens)
-                decoding_tokens_list.append(tokens_or_controls)
-                decoding_control_values_list.append(control_array)
-            # Stack decoding tokens: shape (n_samples, n_decoding_control_tokens)
-            self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
-            self.decoding_controls = np.stack(decoding_tokens_list,
-                                                    axis=1)  # Shape (n_samples, n_decoding_control_tokens)
+                self.decoding_control_values = np.stack(decoding_control_values_list, axis=1)
+                self.decoding_controls = np.stack(decoding_tokens_list, axis=1)
 
             # cache the processed data
             # ------------------------------------------------------------------------------------------
@@ -1149,10 +1124,12 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         invalid_indices_output = get_invalid_indices(self.output_streams)
         all_invalid_indices = set(invalid_indices_input).union(set(invalid_indices_output))
         empty_output_indices = set(get_empty_indices(self.output_streams))
+
         # keep only 99% of empty output indices
         if len(empty_output_indices) > 0:
-            empty_output_indices = set(np.random.choice(list(empty_output_indices), int(len(empty_output_indices) * 0.99),
-                                                    replace=False).tolist())
+            empty_output_indices = set(
+                np.random.choice(list(empty_output_indices), int(len(empty_output_indices) * 0.99),
+                                 replace=False).tolist())
         # add empty output indices to invalid indices
         all_invalid_indices = all_invalid_indices.union(empty_output_indices)
 
@@ -1161,21 +1138,38 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             if print_logs:
                 print(f"Found {len(all_invalid_indices)} invalid samples. Removing them.")
                 print("Size before removing invalid samples: ", self.input_grooves.shape[0])
+
             self.input_grooves = np.delete(self.input_grooves, list(all_invalid_indices), axis=0)
             self.output_streams = np.delete(self.output_streams, list(all_invalid_indices), axis=0)
             self.flat_output_streams = np.delete(self.flat_output_streams, list(all_invalid_indices), axis=0)
-            self.encoding_controls = np.delete(self.encoding_controls, list(all_invalid_indices), axis=0)
-            self.encoding_control_values = np.delete(self.encoding_control_values, list(all_invalid_indices), axis=0)
-            self.decoding_controls = np.delete(self.decoding_controls, list(all_invalid_indices), axis=0)
-            self.decoding_control_values = np.delete(self.decoding_control_values, list(all_invalid_indices), axis=0)
+
+            # Only delete from control arrays if they're not empty
+            if self.encoding_controls.shape[1] > 0:
+                self.encoding_controls = np.delete(self.encoding_controls, list(all_invalid_indices), axis=0)
+                self.encoding_control_values = np.delete(self.encoding_control_values, list(all_invalid_indices),
+                                                         axis=0)
+            else:
+                # Recreate empty arrays with correct first dimension
+                n_valid_samples = self.input_grooves.shape[0]
+                self.encoding_controls = np.empty((n_valid_samples, 0), dtype=np.float32)
+                self.encoding_control_values = np.empty((n_valid_samples, 0), dtype=np.float32)
+
+            if self.decoding_controls.shape[1] > 0:
+                self.decoding_controls = np.delete(self.decoding_controls, list(all_invalid_indices), axis=0)
+                self.decoding_control_values = np.delete(self.decoding_control_values, list(all_invalid_indices),
+                                                         axis=0)
+            else:
+                # Recreate empty arrays with correct first dimension
+                n_valid_samples = self.input_grooves.shape[0]
+                self.decoding_controls = np.empty((n_valid_samples, 0), dtype=np.float32)
+                self.decoding_control_values = np.empty((n_valid_samples, 0), dtype=np.float32)
+
             self.metadata = [self.metadata[ix] for ix in range(len(self.metadata)) if ix not in all_invalid_indices]
             self.tempos = [self.tempos[ix] for ix in range(len(self.tempos)) if ix not in all_invalid_indices]
             self.collection = [self.collection[ix] for ix in range(len(self.collection)) if
                                ix not in all_invalid_indices]
             if print_logs:
                 print("Size after removing invalid samples: ", self.input_grooves.shape[0])
-
-        
 
         # Convert to tensors
         # ------------------------------------------------------------------------------------------
@@ -1187,6 +1181,14 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.decoding_controls = torch.tensor(self.decoding_controls, dtype=torch.float32)
         self.decoding_control_values = torch.tensor(self.decoding_control_values, dtype=torch.float32)
         self.encoding_control_values = torch.tensor(self.encoding_control_values, dtype=torch.float32)
+
+        # Validate tensor shapes
+        if print_logs:
+            print(f"Final tensor shapes:")
+            print(f"  input_grooves: {self.input_grooves.shape}")
+            print(f"  output_streams: {self.output_streams.shape}")
+            print(f"  encoding_controls: {self.encoding_controls.shape}")
+            print(f"  decoding_controls: {self.decoding_controls.shape}")
 
         # move_all_to_cuda
         # ------------------------------------------------------------------------------------------
@@ -1200,14 +1202,74 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
 
         self.indices = list(range(len(self.metadata)))
 
+    def tokenize(self, features, key, n_tokens):
+        """Helper method for tokenizing control features"""
+        if isinstance(n_tokens, str):
+            if n_tokens.lower() == "none":
+                n_tokens = None
+            else:
+                assert isinstance(n_tokens, int), f"n_tokens should be an int or 'None', got {n_tokens}"
+
+        if key == "Flat Out Vs. Input | Hits | Hamming":
+            low = 0.0
+            high = 32.0
+            control_array_ = np.round(features[key], 5)
+        elif (key == "Flat Out Vs. Input | Accent | Hamming" or
+              key == "Stream 1 Vs. Flat Out | Hits | Hamming" or
+              key == "Stream 2 Vs. Flat Out | Hits | Hamming" or
+              key == "Stream 3 Vs. Flat Out | Hits | Hamming"):
+            low = 0.0
+            high = 0.85
+            control_array_ = np.round(features[key], 5)
+        elif key == "Relative Density":
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif key == "Structural Similarity Distance":
+            low = 0.0
+            high = 1.0
+            control_array_ = (np.round(features[key], 5) / 5.6568)
+        elif key == "Total Out Hits":
+            low = 0.0
+            high = 96.0
+            control_array_ = np.round(features[key], 5)
+        elif key == "Output Step Density":
+            low = 0.0
+            high = 1.0
+            control_array_ = np.clip((np.round(features[key], 5) - 1), 0, 3) / (3.0 - 1.0)
+        elif (key == "Stream 1 Relative Density" or
+              key == "Stream 2 Relative Density" or
+              key == "Stream 3 Relative Density"):
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif "Center of Mass" in key:
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        else:
+            available_keys = '\n'.join(features.keys())
+            raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
+
+        if n_tokens is None:  # if control arrays are not needed then we wont use the tokens but rather the continuous values.
+            return control_array_, control_array_
+        else:
+            tokens = tokenize_control_feature_array(
+                control_array=control_array_,
+                n_bins=n_tokens,
+                low=low,
+                high=high
+            )
+            return tokens, control_array_
+
     def __len__(self):
         return len(self.metadata)
 
     def __getitem__(self, idx):
         return (self.input_grooves[idx],
                 self.output_streams[idx],
-                self.encoding_controls[idx],  # tensor shape: (n_encoding_control_tokens,)
-                self.decoding_controls[idx],  # tensor shape: (n_decoding_control_tokens,)
+                self.encoding_controls[idx],  # tensor shape: (n_encoding_control_tokens,) - can be (0,)
+                self.decoding_controls[idx],  # tensor shape: (n_decoding_control_tokens,) - can be (0,)
                 self.metadata[idx],
                 self.indices[idx]
                 )
@@ -1451,15 +1513,48 @@ def get_flexcontrol_triplestream_dataset(
         downsampled_size=None,
         force_regenerate=False,
         move_all_to_cuda=False,
-        print_logs=False,):
+        print_logs=False, ):
     """
     Get FlexControl dataset that returns control tokens as tensors instead of individual tokens.
+    Now supports empty control configurations for no-control experiments.
     """
 
     try:
         cfg_dict = config.as_dict()
     except:
         cfg_dict = config
+
+    # Ensure control configuration keys exist with defaults
+    cfg_dict.setdefault("n_encoding_control_tokens", [])
+    cfg_dict.setdefault("encoding_control_keys", [])
+    cfg_dict.setdefault("n_decoding_control_tokens", [])
+    cfg_dict.setdefault("decoding_control_keys", [])
+
+    # Validate that empty lists are consistent
+    if len(cfg_dict["n_encoding_control_tokens"]) != len(cfg_dict["encoding_control_keys"]):
+        if len(cfg_dict["n_encoding_control_tokens"]) == 0 and len(cfg_dict["encoding_control_keys"]) == 0:
+            pass  # Both empty, OK
+        else:
+            raise ValueError(
+                f"Encoding control mismatch: {len(cfg_dict['n_encoding_control_tokens'])} tokens vs {len(cfg_dict['encoding_control_keys'])} keys")
+
+    if len(cfg_dict["n_decoding_control_tokens"]) != len(cfg_dict["decoding_control_keys"]):
+        if len(cfg_dict["n_decoding_control_tokens"]) == 0 and len(cfg_dict["decoding_control_keys"]) == 0:
+            pass  # Both empty, OK
+        else:
+            raise ValueError(
+                f"Decoding control mismatch: {len(cfg_dict['n_decoding_control_tokens'])} tokens vs {len(cfg_dict['decoding_control_keys'])} keys")
+
+    if print_logs:
+        n_enc = len(cfg_dict["n_encoding_control_tokens"])
+        n_dec = len(cfg_dict["n_decoding_control_tokens"])
+        print(f"Loading dataset with {n_enc} encoding controls and {n_dec} decoding controls")
+        if n_enc == 0 and n_dec == 0:
+            print("  → NO CONTROLS MODE: Traditional VAE behavior")
+        elif n_enc == 0:
+            print("  → NO ENCODING CONTROLS: Only decoding controls active")
+        elif n_dec == 0:
+            print("  → NO DECODING CONTROLS: Only encoding controls active")
 
     return FlexControlGroove2TripleStream2BarDataset.from_concatenated_datasets(
         config=cfg_dict,
