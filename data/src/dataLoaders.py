@@ -1195,66 +1195,6 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
 
         self.indices = list(range(len(self.metadata)))
 
-    def tokenize(self, features, key, n_tokens):
-        """Helper method for tokenizing control features"""
-        if isinstance(n_tokens, str):
-            if n_tokens.lower() == "none":
-                n_tokens = None
-            else:
-                assert isinstance(n_tokens, int), f"n_tokens should be an int or 'None', got {n_tokens}"
-
-        if key == "Flat Out Vs. Input | Hits | Hamming":
-            low = 0.0
-            high = 32.0
-            control_array_ = np.round(features[key], 5)
-        elif (key == "Flat Out Vs. Input | Accent | Hamming" or
-              key == "Stream 1 Vs. Flat Out | Hits | Hamming" or
-              key == "Stream 2 Vs. Flat Out | Hits | Hamming" or
-              key == "Stream 3 Vs. Flat Out | Hits | Hamming"):
-            low = 0.0
-            high = 0.85
-            control_array_ = np.round(features[key], 5)
-        elif key == "Relative Density":
-            low = 0.0
-            high = 1.0
-            control_array_ = np.round(features[key], 5)
-        elif key == "Structural Similarity Distance":
-            low = 0.0
-            high = 1.0
-            control_array_ = (np.round(features[key], 5) / 5.6568)
-        elif key == "Total Out Hits":
-            low = 0.0
-            high = 96.0
-            control_array_ = np.round(features[key], 5)
-        elif key == "Output Step Density":
-            low = 0.0
-            high = 1.0
-            control_array_ = np.clip((np.round(features[key], 5) - 1), 0, 3) / (3.0 - 1.0)
-        elif (key == "Stream 1 Relative Density" or
-              key == "Stream 2 Relative Density" or
-              key == "Stream 3 Relative Density"):
-            low = 0.0
-            high = 1.0
-            control_array_ = np.round(features[key], 5)
-        elif "Center of Mass" in key:
-            low = 0.0
-            high = 1.0
-            control_array_ = np.round(features[key], 5)
-        else:
-            available_keys = '\n'.join(features.keys())
-            raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
-
-        if n_tokens is None:
-            return control_array_, control_array_
-        else:
-            tokens = tokenize_control_feature_array(
-                control_array=control_array_,
-                n_bins=n_tokens,
-                low=low,
-                high=high
-            )
-            return tokens, control_array_
-
     def __len__(self):
         return len(self.metadata)
 
@@ -1504,8 +1444,86 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 "Center of Mass | Input + Output | Angle": input_with_output_com_angle
             })
 
+        if "N Active Steps" not in data_dict:
+            # Count active steps in input grooves
+            features_extracted["N Active Steps | Input"] = (
+                np.sum(np.array(data_dict["input_hvos"])[:, :, 0], axis=-1).tolist())
+            features_extracted["N Active Steps | Output"] = (
+                np.sum(np.array(data_dict["flat_out_hvos"])[:, :, 0], axis=-1).tolist())
+            features_extracted["N Active Steps | Stream 1"] = (
+                np.sum(np.array(data_dict["output_hvos"])[:, :, 0], axis=-1).tolist())
+            features_extracted["N Active Steps | Stream 2"] = (
+                np.sum(np.array(data_dict["output_hvos"])[:, :, 1], axis=-1).tolist())
+            features_extracted["N Active Steps | Stream 3"] = (
+                np.sum(np.array(data_dict["output_hvos"])[:, :, 2], axis=-1).tolist())
+
+
+
         return features_extracted
 
+    def tokenize(self, features, key, n_tokens):
+        """Helper method for tokenizing control features"""
+        if isinstance(n_tokens, str):
+            if n_tokens.lower() == "none":
+                n_tokens = None
+            else:
+                assert isinstance(n_tokens, int), f"n_tokens should be an int or 'None', got {n_tokens}"
+
+        if key == "Flat Out Vs. Input | Hits | Hamming":
+            low = 0.0
+            high = 32.0
+            control_array_ = np.round(features[key], 5)
+        elif (key == "Flat Out Vs. Input | Accent | Hamming" or
+              key == "Stream 1 Vs. Flat Out | Hits | Hamming" or
+              key == "Stream 2 Vs. Flat Out | Hits | Hamming" or
+              key == "Stream 3 Vs. Flat Out | Hits | Hamming"):
+            low = 0.0
+            high = 0.85
+            control_array_ = np.round(features[key], 5)
+        elif key == "Relative Density":
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif key == "Structural Similarity Distance":
+            low = 0.0
+            high = 1.0
+            control_array_ = (np.round(features[key], 5) / 5.6568)
+        elif key == "Total Out Hits":
+            low = 0.0
+            high = 96.0
+            control_array_ = np.round(features[key], 5)
+        elif key == "Output Step Density":
+            low = 0.0
+            high = 1.0
+            control_array_ = np.clip((np.round(features[key], 5) - 1), 0, 3) / (3.0 - 1.0)
+        elif (key == "Stream 1 Relative Density" or
+              key == "Stream 2 Relative Density" or
+              key == "Stream 3 Relative Density"):
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif "Center of Mass" in key:
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif "N Active Steps" in key:
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5) / 32.0
+        else:
+            available_keys = '\n'.join(features.keys())
+            raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
+
+        if n_tokens is None:
+            return control_array_, control_array_
+        else:
+            tokens = tokenize_control_feature_array(
+                control_array=control_array_,
+                n_bins=n_tokens,
+                low=low,
+                high=high
+            )
+            return tokens, control_array_
 
 def get_flexcontrol_triplestream_dataset(
         config,

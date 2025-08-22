@@ -88,10 +88,10 @@ encoding_control_keys:
   - "Center of Mass | Input + Output | Angle"
 
 # Decoding Controls (converted from legacy decoding_control1/2/3)
-n_decoding_control_tokens: [None, None, None]  # No need to tokenize these controls
-decoding_control_modes: ['self_attention', 'self_attention', 'self_attention']  # All prepended (legacy behavior)
+n_decoding_control_tokens: [None, None, None,  None]  # No need to tokenize these controls
+decoding_control_modes: ['self_attention', 'self_attention', 'self_attention', 'self_attention']  # All prepended (legacy behavior)
 decoding_control_keys:
-
+  - "N Active Steps | Output"
   - "Stream 1 Relative Density"         # Hits in Stream 1 divided by total hits (Normalized to 0-1)
   - "Stream 2 Relative Density"         # Hits in Stream 2 divided by total hits
   - "Stream 3 Relative Density"         # Hits in Stream 3 divided by total hits
