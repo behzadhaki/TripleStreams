@@ -82,14 +82,14 @@ num_decoder_layers: 7
 
 # Encoding Controls (converted from legacy encoding_control1/2)
 n_encoding_control_tokens: [None, None]  # No need to tokenize
-encoding_control_modes: ['self-attention', 'self-attention']  # Strategic: first prepended, second added
+encoding_control_modes: ['self_attention', 'self_attention']  # Strategic: first prepended, second added
 encoding_control_keys:
   - "Center of Mass | Input + Output | Magnitude"
   - "Center of Mass | Input + Output | Angle"
 
 # Decoding Controls (converted from legacy decoding_control1/2/3)
 n_decoding_control_tokens: [None, None, None]  # No need to tokenize these controls
-decoding_control_modes: ['self-attention', 'self-attention', 'self-attention']  # All prepended (legacy behavior)
+decoding_control_modes: ['self_attention', 'self_attention', 'self_attention']  # All prepended (legacy behavior)
 decoding_control_keys:
 
   - "Stream 1 Relative Density"         # Hits in Stream 1 divided by total hits (Normalized to 0-1)
