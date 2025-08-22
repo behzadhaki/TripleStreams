@@ -109,13 +109,13 @@ optimizer: "adam"
 
 # Dropout settings
 dropout: 0.1
-offset_dropout: 0
-velocity_dropout: 0
+offset_dropout: 0.1
+velocity_dropout: 0.1
 
 # Loss scaling
-scale_h_loss: 1
-scale_v_loss: 1.5
-scale_o_loss: 10
+scale_h_loss: 1.
+scale_v_loss: 1.
+scale_o_loss: 1.
 
 # Epoch Percentage-based beta annealing
 beta_annealing_period_epoch_pct: 50.0                    # 50% of epoch = half epoch per cycle
