@@ -315,8 +315,8 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         )
 
         _h = torch.sigmoid(h_logits)
-        v = torch.tanh(v_logits) + 0.5
-        o = torch.tanh(o_logits)
+        v = torch.tanh(v_logits) / 2.0 + 0.5 # <----- reverses from [-1, 1] to [0, 1]
+        o = torch.tanh(o_logits) / 2.0 # <------- reverses from [-1, 1] to [-0.5, 0.5]
 
         h = torch.zeros_like(_h)
 
@@ -369,8 +369,8 @@ class FlexControlTripleStreamsVAE(torch.nn.Module):
         )
 
         _h = torch.sigmoid(h_logits)
-        v = torch.tanh(v_logits) + 0.5
-        o = torch.tanh(o_logits)
+        v = torch.tanh(v_logits) / 2.0 + 0.5 # <----- reverses from [-1, 1] to [0, 1]
+        o = torch.tanh(o_logits) / 2.0 # <------- reverses from [-1, 1] to [-0.5, 0.5]
 
         h = torch.zeros_like(_h)
 

@@ -540,18 +540,20 @@ def calculate_hit_loss(hit_logits, hit_targets, hit_loss_function, metrical_prof
 
 def calculate_velocity_loss(vel_logits, vel_targets, vel_loss_function, hit_mask=None):
     vel_activated = torch.tanh(vel_logits)
+    # expands velocity from 0-1 range to -1 to 1 range
     if hit_mask is None:
-        return (vel_loss_function(vel_activated, vel_targets - 0.5)).mean()
+        return (vel_loss_function(vel_activated, (vel_targets - 0.5) * 2)).mean()
     else:
-        return (vel_loss_function(vel_activated, vel_targets - 0.5) * hit_mask).mean()
+        return (vel_loss_function(vel_activated, (vel_targets - 0.5) * 2) * hit_mask).mean()
 
 
 def calculate_offset_loss(offset_logits, offset_targets, offset_loss_function, hit_mask=None):
     offset_activated = torch.tanh(offset_logits)
+    # expands offset from -0.5 to 0.5 range to -1 to 1 range
     if hit_mask is None:
-        return offset_loss_function(offset_activated, offset_targets).mean()
+        return offset_loss_function(offset_activated, offset_targets * 2.0).mean()
     else:
-        return (offset_loss_function(offset_activated, offset_targets) * hit_mask).mean()
+        return (offset_loss_function(offset_activated, offset_targets * 2.0) * hit_mask).mean()
 
 
 def calculate_kld_loss(mu, log_var, free_bits=4.0):
