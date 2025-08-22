@@ -648,9 +648,13 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
         # Backpropagation (only if training)
         if optimizer is not None:
             optimizer.zero_grad()
-            (batch_loss_h + batch_loss_KL_Beta_Scaled).backward(retain_graph=True)
-            batch_loss_v.backward(retain_graph=True)
-            batch_loss_o.backward(retain_graph=True)
+            # (batch_loss_h + batch_loss_KL_Beta_Scaled).backward(retain_graph=True)
+            # batch_loss_v.backward(retain_graph=True)
+            # batch_loss_o.backward(retain_graph=True)
+
+            total_loss = batch_loss_h + batch_loss_v + batch_loss_o + batch_loss_KL_Beta_Scaled
+            total_loss.backward()
+
             optimizer.step()
 
         # Store metrics
