@@ -15,7 +15,7 @@ wandb_project: "CenterOfGravity(0-0.5)|MutesExclusiveness"
 # ===================================================================================
 
 start_shuffle_on_epoch: 0.0                            # Start shuffling from epoch 1
-augment_with_no_inputs: true
+augment_with_no_inputs: false
 
 dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 
