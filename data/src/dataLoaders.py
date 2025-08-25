@@ -8,7 +8,7 @@ import json
 import logging
 import random
 from data import *
-
+from data.src.feature_extractors import *
 import hashlib
 import base64
 from typing import Literal
@@ -194,215 +194,6 @@ def map_value_to_bins(value, edges):
                 return i
 
     print("SHOULD NOT REACH HERE")
-
-# --------------- helpers: Center of Mass Extractiors ---------------
-
-def hvo_to_polar_center_of_mass(hvo, use_velocity=False, use_microtiming=False):
-    """
-    Convert HVO sequence to polar coordinates and find center of mass (vectorized).
-
-    Args:
-        hvo: np.array of shape [batch_size, 32, 3] where:
-             - [:, :, 0] = onsets (binary)
-             - [:, :, 1] = velocities (0-1)
-             - [:, :, 2] = microtiming (-0.5 to 0.5)
-        use_velocity: bool, if True use velocity as radius (normalized to max), else use 1
-        use_microtiming: bool, if True adjust timing with microtiming offset
-
-    Returns:
-        magnitude: np.array of shape [batch_size] - magnitude of center of mass (0-1)
-        angle: np.array of shape [batch_size] - angle of center of mass (0-1, representing 0 to 2π)
-    """
-    # Create timestep array for all batches: shape [batch_size, 32]
-    timesteps = np.arange(32)[np.newaxis, :].repeat(hvo.shape[0], axis=0)
-
-    # Calculate actual timing positions
-    actual_timing = timesteps.astype(float)
-    if use_microtiming:
-        actual_timing = actual_timing + hvo[:, :, 2]
-        # Handle wraparound for step 0 with negative microtiming
-        step_0_mask = (timesteps == 0) & (hvo[:, :, 2] < 0)
-        actual_timing[step_0_mask] = 32 + hvo[:, :, 2][step_0_mask]
-        # Ensure timing stays within valid range
-        actual_timing = actual_timing % 32
-
-    # Convert timing to angles (0 to 2π): shape [batch_size, 32]
-    angles = (actual_timing / 32.0) * 2 * np.pi
-
-    # Determine radius for each point: shape [batch_size, 32]
-    if use_velocity:
-        # Normalize velocity to max value per batch
-        max_velocity = np.max(hvo[:, :, 1], axis=1, keepdims=True)  # shape [batch_size, 1]
-        # Handle case where max velocity is zero
-        max_velocity_safe = np.where(max_velocity > 0, max_velocity, 1.0)
-        radius = hvo[:, :, 1] / max_velocity_safe  # normalized velocity as radius
-    else:
-        radius = np.ones_like(hvo[:, :, 1])  # unit radius
-
-    # Convert to Cartesian coordinates: shape [batch_size, 32]
-    x_all = radius * np.cos(angles)
-    y_all = radius * np.sin(angles)
-
-    # Weight by onset strength: shape [batch_size, 32]
-    weights = hvo[:, :, 0]
-
-    # Apply weights to coordinates
-    x_weighted = x_all * weights
-    y_weighted = y_all * weights
-
-    # Calculate center of mass for each batch
-    total_weights = np.sum(weights, axis=1)  # shape [batch_size]
-
-    # Handle case where no onsets exist (avoid division by zero)
-    total_weights_safe = np.where(total_weights > 0, total_weights, 1.0)
-
-    x_center = np.sum(x_weighted, axis=1) / total_weights_safe  # shape [batch_size]
-    y_center = np.sum(y_weighted, axis=1) / total_weights_safe  # shape [batch_size]
-
-    # Set center to (0,0) for batches with no onsets
-    no_onsets_mask = total_weights == 0
-    x_center[no_onsets_mask] = 0.0
-    y_center[no_onsets_mask] = 0.0
-
-    # Convert back to polar coordinates
-    magnitude = np.sqrt(x_center ** 2 + y_center ** 2)
-    angle_radians = np.arctan2(y_center, x_center)
-
-    # Handle floating-point precision errors: if magnitude is essentially zero, set to exactly zero
-    tolerance = 1e-10
-    near_zero_mask = magnitude < tolerance
-    magnitude[near_zero_mask] = 0.0
-
-    # For near-zero magnitudes, set angle to 0 (arbitrary but consistent)
-    angle_radians[near_zero_mask] = 0.0
-
-    # Normalize angle to 0-1 range (0 to 2π)
-    angle_normalized = (angle_radians + 2 * np.pi) % (2 * np.pi) / (2 * np.pi)
-
-    return magnitude, angle_normalized
-
-
-def hvo_polar_comparison(hvo1, hvo2):
-    """
-    Compare two HVO sequences using polar coordinate differences.
-
-    Args:
-        hvo1: np.array of shape [batch_size, 32, 3] - first HVO sequence
-        hvo2: np.array of shape [batch_size, 32, 3] - second HVO sequence
-
-    Returns:
-        timing_mag_diff: magnitude difference for timing (hvo1 - hvo2, -1 to +1)
-        timing_ang_diff: angle difference for timing (hvo1 - hvo2, -0.5 to +0.5)
-        velocity_mag_diff: magnitude difference for velocity (hvo1 - hvo2, -1 to +1)
-        velocity_ang_diff: angle difference for velocity (hvo1 - hvo2, -0.5 to +0.5)
-
-    Expected Behavior Examples:
-
-    TIMING DIFFERENCES (onset + microtiming, unit radius):
-    - Single onset vs scattered onsets:
-      timing_mag_diff ≈ +0.8 (hvo1 more concentrated)
-    - Scattered onsets vs single onset:
-      timing_mag_diff ≈ -0.8 (hvo1 less concentrated)
-    - Onset at step 0 vs onset at step 8:
-      timing_ang_diff = -0.25 (hvo1 is 90° behind hvo2)
-    - Onset at step 8 vs onset at step 0:
-      timing_ang_diff = +0.25 (hvo1 is 90° ahead of hvo2)
-    - Onsets at opposite positions (step 0 vs step 16):
-      timing_ang_diff = ±0.5 (180° apart, sign depends on shortest path)
-    - Same timing pattern: timing_mag_diff ≈ 0, timing_ang_diff ≈ 0
-
-    VELOCITY DIFFERENCES (onset + velocity weighting, no microtiming):
-    - High velocity (0.8) vs low velocity (0.3) at same position:
-      velocity_mag_diff ≈ +0.5 (hvo1 stronger velocity profile)
-    - Single strong onset vs multiple weak onsets:
-      velocity_mag_diff > 0 (hvo1 more concentrated velocity)
-    - Velocity pattern at step 0 vs step 12:
-      velocity_ang_diff ≈ -0.375 (hvo1 is 135° behind hvo2)
-    - Same velocity pattern: velocity_mag_diff ≈ 0, velocity_ang_diff ≈ 0
-
-    EDGE CASES:
-    - No onsets vs single onset: mag_diff = -1.0
-    - Single onset vs no onsets: mag_diff = +1.0
-    - Floating-point precision near zero: handled with tolerance (returns 0.0)
-
-    INTERPRETATION:
-    - Positive mag_diff: hvo1 has more concentrated/focused pattern
-    - Negative mag_diff: hvo1 has more spread out/diffuse pattern
-    - Positive ang_diff: hvo1's center is counterclockwise from hvo2
-    - Negative ang_diff: hvo1's center is clockwise from hvo2
-    """
-    # Get timing polar coordinates (onset + microtiming, no velocity weighting)
-    mag1_timing, ang1_timing = hvo_to_polar_center_of_mass(hvo1, use_velocity=False, use_microtiming=True)
-    mag2_timing, ang2_timing = hvo_to_polar_center_of_mass(hvo2, use_velocity=False, use_microtiming=True)
-
-    # Get velocity polar coordinates (onset + velocity, no microtiming)
-    mag1_velocity, ang1_velocity = hvo_to_polar_center_of_mass(hvo1, use_velocity=True, use_microtiming=False)
-    mag2_velocity, ang2_velocity = hvo_to_polar_center_of_mass(hvo2, use_velocity=True, use_microtiming=False)
-
-    # Calculate timing differences
-    timing_mag_diff = mag1_timing - mag2_timing
-    timing_ang_diff = ang1_timing - ang2_timing
-    # Handle circular angle difference (shortest path)
-    timing_ang_diff = np.where(timing_ang_diff > 0.5, timing_ang_diff - 1.0, timing_ang_diff)
-    timing_ang_diff = np.where(timing_ang_diff < -0.5, timing_ang_diff + 1.0, timing_ang_diff)
-
-    # Calculate velocity differences
-    velocity_mag_diff = mag1_velocity - mag2_velocity
-    velocity_ang_diff = ang1_velocity - ang2_velocity
-    # Handle circular angle difference (shortest path)
-    velocity_ang_diff = np.where(velocity_ang_diff > 0.5, velocity_ang_diff - 1.0, velocity_ang_diff)
-    velocity_ang_diff = np.where(velocity_ang_diff < -0.5, velocity_ang_diff + 1.0, velocity_ang_diff)
-
-    return timing_mag_diff, timing_ang_diff, velocity_mag_diff, velocity_ang_diff
-
-
-def hvo_combined_polar_center_of_mass(hvo1, hvo2, use_velocity=True, use_microtiming=True):
-    """
-    Combine two HVO sequences on a single z-plane and find their combined center of mass.
-
-    Args:
-        hvo1: np.array of shape [batch_size, 32, 3] - first HVO sequence
-        hvo2: np.array of shape [batch_size, 32, 3] - second HVO sequence
-        use_velocity: bool, if True use velocity as radius (normalized to max), else use 1
-        use_microtiming: bool, if True adjust timing with microtiming offset
-
-    Returns:
-        magnitude: np.array [batch_size] - magnitude of combined center of mass (0-1)
-        angle: np.array [batch_size] - angle of combined center of mass (0-1, representing 0 to 2π)
-    """
-    import numpy as np
-
-    # Get individual polar coordinates for both HVOs
-    mag1, ang1 = hvo_to_polar_center_of_mass(hvo1, use_velocity=use_velocity, use_microtiming=use_microtiming)
-    mag2, ang2 = hvo_to_polar_center_of_mass(hvo2, use_velocity=use_velocity, use_microtiming=use_microtiming)
-
-    # Convert to Cartesian coordinates
-    ang1_rad = ang1 * 2 * np.pi
-    ang2_rad = ang2 * 2 * np.pi
-
-    x1 = mag1 * np.cos(ang1_rad)
-    y1 = mag1 * np.sin(ang1_rad)
-    x2 = mag2 * np.cos(ang2_rad)
-    y2 = mag2 * np.sin(ang2_rad)
-
-    # Calculate combined center of mass (simple average of the two centers)
-    x_combined = (x1 + x2) / 2.0
-    y_combined = (y1 + y2) / 2.0
-
-    # Convert back to polar coordinates
-    magnitude = np.sqrt(x_combined ** 2 + y_combined ** 2)
-    angle_radians = np.arctan2(y_combined, x_combined)
-
-    # Handle floating-point precision errors
-    tolerance = 1e-10
-    near_zero_mask = magnitude < tolerance
-    magnitude[near_zero_mask] = 0.0
-    angle_radians[near_zero_mask] = 0.0
-
-    # Normalize angle to 0-1 range (0 to 2π)
-    angle_normalized = (angle_radians + 2 * np.pi) % (2 * np.pi) / (2 * np.pi)
-
-    return magnitude, angle_normalized
 
 # ---------- Tokenization of control values into bins ----------
 def tokenize_control_feature_array(
@@ -1457,6 +1248,32 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             features_extracted["N Active Steps | Stream 3"] = (
                 np.sum(np.array(data_dict["output_hvos"])[:, :, 2], axis=-1).tolist())
 
+        if ("Output Rhythm Density Synchronization Score" not in data_dict or
+                "Intra Stream Exclusiveness" not in data_dict or "Mute" not in data_dict):
+            # Calculate Rhythm Density Synchronization Score
+            stream_1_hits = np.array(data_dict["output_hvos"])[:, :, 0].astype(int)
+            stream_2_hits = np.array(data_dict["output_hvos"])[:, :, 1].astype(int)
+            stream_3_hits = np.array(data_dict["output_hvos"])[:, :, 2].astype(int)
+            features_extracted["Output Rhythm Density Synchronization Score"] = rhythm_density_sync_score(
+                stream_1_hits, stream_2_hits, stream_3_hits, sync_weight=0.5
+            ).tolist()
+            features_extracted["Intra Stream Exclusiveness"] = intra_stream_exclusiveness(stream_1_hits, stream_2_hits, stream_3_hits)
+
+            # Calculate Mute
+            stream_1_hit_counts = stream_1_hits.sum(-1)
+            stream_2_hit_counts = stream_2_hits.sum(-1)
+            stream_3_hit_counts = stream_3_hits.sum(-1)
+            features_extracted["Stream 1 | Muted"] = np.where(stream_1_hit_counts < 1.0, 1.0, 0.0).tolist()
+            features_extracted["Stream 2 | Muted"] = np.where(stream_2_hit_counts < 1.0, 1.0, 0.0).tolist()
+            features_extracted["Stream 3 | Muted"] = np.where(stream_3_hit_counts < 1.0, 1.0, 0.0).tolist()
+
+        if "Balance" not in data_dict or "Evenness" not in data_dict or "IOI Entropy" not in data_dict:
+            input_hits = np.array(data_dict["input_hvos"])[:, :, 0].astype(int)
+            output_hits = np.array(data_dict["flat_out_hvos"])[:, :, 0].astype(int)
+            input_and_output_hits = np.clip(input_hits + output_hits, 0, 1)
+            features_extracted["Balance | Input + Output"] = get_balance(input_and_output_hits).tolist()
+            features_extracted["Evenness | Input + Output"] = get_evenness(input_and_output_hits).tolist()
+            features_extracted["IOI Entropy | Input + Output"] = get_normalized_interonset_interval_entropy(input_and_output_hits).tolist()
 
 
         return features_extracted
@@ -1504,12 +1321,24 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             control_array_ = np.round(features[key], 5)
         elif "Center of Mass" in key:
             low = 0.0
-            high = 1.0
+            high = 0.5
             control_array_ = np.round(features[key], 5)
         elif "N Active Steps" in key:
             low = 0.0
             high = 1.0
             control_array_ = np.round(features[key], 5) / 32.0
+        elif "Balance" in key or "Evenness" in key or "IOI Entropy" in key:
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif "Mute" in key:
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
+        elif "Intra Stream Exclusiveness" in key:
+            low = 0.0
+            high = 1.0
+            control_array_ = np.round(features[key], 5)
         else:
             available_keys = '\n'.join(features.keys())
             raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
