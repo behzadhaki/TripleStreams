@@ -117,7 +117,7 @@ velocity_dropout: 0.1
 # Loss scaling
 scale_h_loss: 1.
 scale_v_loss: 1.
-scale_o_loss: 1.
+scale_o_loss: 10.
 
 # Epoch Percentage-based beta annealing
 beta_annealing_period_epoch_pct: 50.0                    # 50% of epoch = half epoch per cycle
