@@ -1335,8 +1335,12 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             control_array_ = np.round(features[key], 5)
         elif "Center of Mass" in key:
             low = 0.0
-            high = 0.5 if "Magnitude" in key else 1.0
-            control_array_ = np.round(features[key], 5)
+            if "Magnitude" in key:
+                high = 0.5
+                control_array_ = np.round(np.sqrt(features[key]), 5) # we'll use sqrt to expand range condensed around zero, and then use 0-0.4 range
+            else:
+                high = 1.0
+                control_array_ = np.round(features[key], 5)
         elif "N Active Steps" in key:
             low = 0.0
             high = 1.0
@@ -1358,7 +1362,8 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             raise KeyError(f"Control key '{key}' not recognized - available keys: {available_keys}")
 
         if n_tokens is None:
-            return control_array_, control_array_
+            tokens = np.clip((control_array_ - low) / (high - low), 0.0, 1.0)
+            return tokens, control_array_
         else:
             tokens = tokenize_control_feature_array(
                 control_array=control_array_,
