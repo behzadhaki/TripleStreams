@@ -121,7 +121,8 @@ parser.add_argument("--dataset_files", nargs='+', help="List of dataset files",
                     default=["01_candombe_four_voices.pkl.bz2"])
 parser.add_argument("--evaluate_on_subset", type=str, help="Using test or evaluation subset for evaluating the model",
                     default="test", choices=['test', 'evaluation'])
-
+parser.add_argument("--augment_with_no_inputs", help="Duplicates data but removes input from second version", type=bool,
+                    default=False)
 # ----------------------- Evaluation Params -----------------------
 parser.add_argument("--calculate_hit_scores_on_train", type=bool,
                     help="Evaluates the quality of the hit models on training set", default=True)
@@ -413,6 +414,7 @@ else:
         # Data parameters
         dataset_root_path=args.dataset_root_path,
         dataset_files=args.dataset_files,
+        augment_with_no_inputs=args.augment_with_no_inputs,
 
         # Checkpoint resume parameters
         resume_from_checkpoint=args.resume_from_checkpoint,
@@ -491,7 +493,7 @@ if __name__ == "__main__":
         use_cached=True,
         downsampled_size=1000 if is_testing else None,
         move_all_to_cuda=args.move_all_to_cuda,
-        augment_with_no_inputs=True,
+        augment_with_no_inputs=config.augment_with_no_inputs,
         print_logs=True
     )
 
@@ -500,7 +502,7 @@ if __name__ == "__main__":
         subset_tag="test",
         use_cached=True,
         downsampled_size=1000 if is_testing else None,
-        augment_with_no_inputs=True,
+        augment_with_no_inputs=config.augment_with_no_inputs,
         print_logs=True
     )
 
