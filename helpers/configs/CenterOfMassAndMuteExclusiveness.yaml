@@ -90,7 +90,7 @@ encoding_control_keys:
 
 # Decoding Controls (converted from legacy decoding_control1/2/3)
 n_decoding_control_tokens: [33, None, 2,  2, 2]  # No need to tokenize these controls
-decoding_control_modes: ['self_attention', 'self_attention', 'self_attention', 'self_attention', 'self_attention']  # All prepended (legacy behavior)
+decoding_control_modes: ['compact_attention', 'compact_attention', 'compact_attention', 'compact_attention', 'compact_attention']  # All prepended (legacy behavior)
 decoding_control_keys:
   - "N Active Steps | Output"
   - "Intra Stream Exclusiveness"
