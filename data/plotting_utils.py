@@ -50,8 +50,7 @@ def plot_polar_single(radius, angle, draw_n_points=None, figsize=(10, 10),
 
     # Plot points
     ax.scatter(plot_angle_rad, plot_radius,
-               c=color, s=point_size, alpha=point_alpha, edgecolors='none',
-               label=label, zorder=3)
+               c=color, s=point_size, alpha=point_alpha, edgecolors='none', zorder=3)
 
     # Customize the plot
     ax.set_ylim(0, 1)

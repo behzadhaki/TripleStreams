@@ -734,7 +734,7 @@ def batch_loop_step_based(dataloader_, forward_method, hit_loss_fn, velocity_los
         diversity_loss = calculate_metrical_diversity_regularization(
             hit_logits=h_logits,
             diversity_weight=diversity_weight
-        )
+        ) * 0.0f # ignore this loss
 
         batch_loss_v = calculate_velocity_loss(
             vel_logits=v_logits, vel_targets=v_targets, vel_loss_function=velocity_loss_fn,
