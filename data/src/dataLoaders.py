@@ -679,6 +679,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                  downsampled_size=None,
                  force_regenerate=False,
                  move_all_to_cuda=False,
+                 augment_with_no_inputs=False,
                  print_logs=False):
 
         self.dataset_root_path = config["dataset_root_path"]
@@ -709,7 +710,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             dir_ = os.path.join("cached/TorchDatasets/", self.dataset_root_path.replace("/", "-"), self.subset_tag)
             os.makedirs(dir_, exist_ok=True)
             filename = "".join([df.split("_")[0] for df in self.dataset_files])
-            filename += f"_features_{self.max_len}_{downsampled_size}"
+            filename += f"_features_{self.max_len}_{downsampled_size}_{augment_with_no_inputs}"
             filename = filename.replace(" ", "_").replace("|", "_").replace("/", "_").replace("\\", "_").replace("__",
                                                                                                                  "_").replace(
                 "__", "_")
@@ -814,10 +815,29 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             self.tempos = loaded_data_dictionary["qpm"]
             self.collection = [self.dataset_files[0] for _ in range(len(self.metadata))]
 
+            # if augment_with_no_inputs,
+            if augment_with_no_inputs:
+                print("AUGMENTING")
+                self.input_grooves = np.concatenate([self.input_grooves, np.zeros_like(self.input_grooves)], axis=0)
+                assert self.input_grooves.shape[0] == 2 * self.output_streams.shape[0]
+                self.output_streams = np.concatenate([self.output_streams, self.output_streams], axis=0)
+                self.flat_output_streams = np.concatenate([self.flat_output_streams, self.flat_output_streams], axis=0)
+                self.metadata.extend(self.metadata)
+                loaded_data_dictionary["qpm"].extend(loaded_data_dictionary["qpm"])
+                self.collection.extend(self.collection)
+                assert len(self.metadata) == self.input_grooves.shape[0] == self.output_streams.shape[0] == self.flat_output_streams.shape[0]
+
             # Extract all features
             if print_logs:
                 print("Extracting features...")
-            features = self.extract_features_dict(loaded_data_dictionary)
+
+            features = self.extract_features_dict(
+                {
+                    "input_hvos": self.input_grooves,
+                    "output_hvos": self.output_streams,
+                    "flat_out_hvos": self.flat_output_streams,
+                },
+            )
 
             cache_needs_update = True
 
@@ -966,14 +986,6 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
         self.decoding_control_values = torch.tensor(self.decoding_control_values, dtype=torch.float32)
         self.encoding_control_values = torch.tensor(self.encoding_control_values, dtype=torch.float32)
 
-        # Validate and log tensor shapes
-        if print_logs:
-            print(f"Final tensor shapes:")
-            print(f"  input_grooves: {self.input_grooves.shape}")
-            print(f"  output_streams: {self.output_streams.shape}")
-            print(f"  encoding_controls: {self.encoding_controls.shape}")
-            print(f"  decoding_controls: {self.decoding_controls.shape}")
-
         # Move to CUDA if requested
         # ------------------------------------------------------------------------------------------
         if move_all_to_cuda and torch.cuda.is_available():
@@ -1005,6 +1017,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                                    downsampled_size=None,
                                    force_regenerate=False,
                                    move_all_to_cuda=False,
+                                   augment_with_no_inputs=False,
                                    print_logs=False):
         """
         Alternative constructor that loads multiple dataset files and concatenates them
@@ -1034,6 +1047,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
                 downsampled_size=individual_downsampled_size,
                 force_regenerate=force_regenerate,
                 move_all_to_cuda=False,
+                augment_with_no_inputs=augment_with_no_inputs,
                 print_logs=print_logs
             )
             datasets.append(dataset)
@@ -1147,19 +1161,19 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
 
         features_extracted = {}
 
-        # Basic features that are always extracted
-        basic_features = {
-            "Flat Out Vs. Input | Hits | Hamming",
-            "Flat Out Vs. Input | Accent | Hamming",
-            "Stream 1 Vs. Flat Out | Hits | Hamming",
-            "Stream 2 Vs. Flat Out | Hits | Hamming",
-            "Stream 3 Vs. Flat Out | Hits | Hamming"
-        }
-
-        # Add basic features if they exist in the data dict
-        for feature in basic_features:
-            if feature in data_dict:
-                features_extracted[feature] = data_dict[feature]
+        # # Basic features that are always extracted
+        # basic_features = {
+        #     "Flat Out Vs. Input | Hits | Hamming",
+        #     "Flat Out Vs. Input | Accent | Hamming",
+        #     "Stream 1 Vs. Flat Out | Hits | Hamming",
+        #     "Stream 2 Vs. Flat Out | Hits | Hamming",
+        #     "Stream 3 Vs. Flat Out | Hits | Hamming"
+        # }
+        #
+        # # Add basic features if they exist in the data dict
+        # for feature in basic_features:
+        #     if feature in data_dict:
+        #         features_extracted[feature] = data_dict[feature]
 
         # Check if relative hit density is present
         if "Relative Density" not in data_dict or "Total Out Hits" not in data_dict:
@@ -1321,7 +1335,7 @@ class FlexControlGroove2TripleStream2BarDataset(Dataset):
             control_array_ = np.round(features[key], 5)
         elif "Center of Mass" in key:
             low = 0.0
-            high = 0.5
+            high = 0.5 if "Magnitude" in key else 1.0
             control_array_ = np.round(features[key], 5)
         elif "N Active Steps" in key:
             low = 0.0
@@ -1361,6 +1375,7 @@ def get_flexcontrol_triplestream_dataset(
         downsampled_size=None,
         force_regenerate=False,
         move_all_to_cuda=False,
+        augment_with_no_inputs=False,
         print_logs=False, ):
     """
     Get FlexControl dataset that returns control tokens as tensors instead of individual tokens.
@@ -1412,6 +1427,7 @@ def get_flexcontrol_triplestream_dataset(
         downsampled_size=downsampled_size,
         force_regenerate=force_regenerate,
         move_all_to_cuda=move_all_to_cuda,
+        augment_with_no_inputs=augment_with_no_inputs,
         print_logs=print_logs
     )
 

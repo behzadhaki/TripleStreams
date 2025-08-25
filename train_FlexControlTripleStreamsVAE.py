@@ -491,6 +491,7 @@ if __name__ == "__main__":
         use_cached=True,
         downsampled_size=1000 if is_testing else None,
         move_all_to_cuda=args.move_all_to_cuda,
+        augment_with_no_inputs=True,
         print_logs=True
     )
 
@@ -499,6 +500,7 @@ if __name__ == "__main__":
         subset_tag="test",
         use_cached=True,
         downsampled_size=1000 if is_testing else None,
+        augment_with_no_inputs=True,
         print_logs=True
     )
 
