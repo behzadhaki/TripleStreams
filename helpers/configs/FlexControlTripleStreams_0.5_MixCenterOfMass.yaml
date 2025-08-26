@@ -17,6 +17,8 @@ start_shuffle_on_epoch: 0.0                            # Start shuffling from ep
 
 dataset_root_path: "data/triple_streams/model_ready/AccentAt0.75/"
 
+augment_with_no_inputs: false
+
 dataset_files:
   - 01_candombe_four_voices.pkl.bz2
   - 02_elbg_both_flattened_left_right.pkl.bz2
