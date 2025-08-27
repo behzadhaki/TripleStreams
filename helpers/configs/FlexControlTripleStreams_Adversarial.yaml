@@ -144,12 +144,12 @@ scale_v_loss: 1.
 scale_o_loss: 1.
 
 # Epoch Percentage-based beta annealing
-beta_annealing_period_epoch_pct: 50.0                    # 50% of epoch = half epoch per cycle
+beta_annealing_period_epoch_pct: 1000.0                    # 50% of epoch = half epoch per cycle
 beta_annealing_start_first_rise_at_epoch_pct: 100.0      # Start rising after 100% of first epoch
-beta_annealing_per_cycle_rising_ratio: 0.7               # 70% of cycle is rising phase
-beta_annealing_gap_ratio: 0.1                            # 10% of cycle is gap (beta=0) at end
+beta_annealing_per_cycle_rising_ratio: 0.1               # 70% of cycle is rising phase
+beta_annealing_gap_ratio: 0.01                            # 10% of cycle is gap (beta=0) at end
 beta_annealing_activated: true
-beta_level: 0.5
+beta_level: 0.2
 
 # ===================================================================================
 # Logging and Evaluation Settings
