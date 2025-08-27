@@ -365,8 +365,10 @@ if __name__ == "__main__":
 
     # Calculate adversarial warmup steps
     if adversarial_trainer is not None:
-        adversarial_warmup_steps = int(steps_per_epoch * config.get('adversarial_warmup_steps_epoch_pct', 10.0) / 100.0)
-        adversarial_warmup_steps = max(adversarial_warmup_steps, 1) # At least 1 step (only happens in testing)
+        # Calculate adversarial warmup steps
+        if adversarial_trainer is not None:
+            adversarial_warmup_steps = max(1, int(steps_per_epoch * config.get('adversarial_warmup_steps_epoch_pct',
+                                                                               10.0) / 100.0))
         print(
             f"\n\n|Adversarial training will start after {adversarial_warmup_steps} steps ({config.get('adversarial_warmup_steps_epoch_pct', 10.0)}% of first epoch)|\n\n")
     else:

@@ -79,7 +79,7 @@ def batch_loop_step_based_adversarial(dataloader_, forward_method, hit_loss_fn, 
             current_adversarial_weight = 0.0
         else:
             # Gradual ramp-up over warmup_steps
-            ramp_progress = (current_step - warmup_steps) / warmup_steps
+            ramp_progress = (current_step - warmup_steps) / max(1, warmup_steps)
             current_adversarial_weight = adversarial_weight * ramp_progress
 
         # Forward pass
