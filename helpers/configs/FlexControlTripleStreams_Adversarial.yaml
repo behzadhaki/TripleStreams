@@ -16,7 +16,7 @@ use_adversarial_training: true
 
 # Adversarial loss weights and scheduling
 adversarial_weight: 0.15                           # Weight of adversarial loss in total generator loss
-adversarial_warmup_steps_epoch_pct: 10.0           # Start adversarial training after 10% of first epoch
+adversarial_warmup_steps_epoch_pct: 200.0           # Start adversarial training after 10% of first epoch
 feature_matching_weight: 5.0                       # Weight for feature matching loss (stability)
 diversity_weight: 0.3                              # Weight for diversity regularization
 
